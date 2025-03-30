@@ -635,7 +635,6 @@ class PostCreator
             CURLOPT_URL => "https://api.apilayer.com/short_url/hash",
             CURLOPT_HTTPHEADER => array(
                 "Content-Type: text/plain",
-                "apikey: GAa0LGlu0iFlm7zshsR9Oa6Ojb9lGbvl"
             ),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_ENCODING => "",
@@ -662,7 +661,6 @@ class PostCreator
 
     public function pfa_translate_content_with_google($content, $target_language = 'sv')
     {
-        $api_key = 'AIzaSyCs4UkBK43F8sLBS40eTnhkqMvZKIc5EVU';
         $url = 'https://translation.googleapis.com/language/translate/v2';
         $args = array(
             'body' => json_encode(array(
