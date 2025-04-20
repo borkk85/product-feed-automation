@@ -1,75 +1,126 @@
 <?php
+/**
+ * Handles creation and management of posts.
+ *
+ * @since      1.0.0
+ * @package    Product_Feed_Automation
+ */
 
-class PostCreator
-{
-    private static $instance = null;
-    private const PFA_POST_IDENTIFIER = '_pfa_v2_post';
+class PFA_Post_Creator {
 
-    public function __construct()
-    {
-        add_action('before_delete_post', [$this, 'cleanupMeta']);
-        add_action('template_redirect', [$this, 'handleRedirect']);
-    }
+    /**
+     * The single instance of the class.
+     *
+     * @since    1.0.0
+     * @access   protected
+     * @var      PFA_Post_Creator    $instance    The single instance of the class.
+     */
+    protected static $instance = null;
 
-    public static function getInstance()
-    {
+    /**
+     * Post identifier meta key.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @var      string    $post_identifier   Post identifier meta key.
+     */
+    private const POST_IDENTIFIER = '_pfa_v2_post';
+
+    /**
+     * Main PFA_Post_Creator Instance.
+     *
+     * Ensures only one instance of PFA_Post_Creator is loaded or can be loaded.
+     *
+     * @since    1.0.0
+     * @return   PFA_Post_Creator    Main instance.
+     */
+    public static function get_instance() {
         if (null === self::$instance) {
             self::$instance = new self();
         }
         return self::$instance;
     }
 
-    public function __clone() {}
+    /**
+     * Constructor.
+     *
+     * @since    1.0.0
+     * @access   protected
+     */
+    protected function __construct() {
+        add_action('before_delete_post', array($this, 'cleanup_meta'));
+        add_action('template_redirect', array($this, 'handle_redirect'));
+    }
 
-    public function __wakeup() {}
+    /**
+     * Prevent cloning.
+     *
+     * @since    1.0.0
+     * @access   protected
+     */
+    protected function __clone() {}
 
-    public function createProductPost($product_data, $advertiser_data, $schedule_data = null)
-    {
-        error_log('Starting product post creation for product: ' . print_r($product_data['id'], true));
+    /**
+     * Prevent unserializing.
+     *
+     * @since    1.0.0
+     * @access   protected
+     */
+    protected function __wakeup() {}
 
-    
+    /**
+     * Create a product post.
+     *
+     * @since    1.0.0
+     * @param    array     $product_data      Product data.
+     * @param    array     $advertiser_data   Advertiser data.
+     * @param    array     $schedule_data     Schedule data (optional).
+     * @return   int|false                   Post ID or false on failure.
+     */
+    public function create_product_post($product_data, $advertiser_data, $schedule_data = null) {
+        $this->log_message('Starting product post creation for product: ' . print_r($product_data['id'], true));
+
         // Basic availability check remains as a safeguard
         if ($product_data['availability'] !== 'in_stock') {
-            error_log('Product not in stock, skipping');
+            $this->log_message('Product not in stock, skipping');
             return false;
         }
     
-        $existing_post_id = $this->checkIfAlreadyInDb($product_data['trackingLink']);
+        $existing_post_id = $this->check_if_already_in_db($product_data['trackingLink']);
         if ($existing_post_id) {
-            error_log('Product already exists as post ID: ' . $existing_post_id);
+            $this->log_message('Product already exists as post ID: ' . $existing_post_id);
             return array('status' => 'exists', 'post_id' => $existing_post_id);
         }
         
-
         $product_id = $product_data['id'];
-        $encoded_id = $this->encryptUnique($product_id);
+        $encoded_id = $this->encrypt_unique($product_id);
         $dynamic_url = site_url() . '/?pfa=' . urlencode($encoded_id);
         $dynamic_esc_url = esc_url($dynamic_url);
 
         $title = stripslashes($product_data['title']);
         $title = trim($title, '"');
-        error_log('Title after cleanup: ' . $title);
+        $this->log_message('Title after cleanup: ' . $title);
 
-        $translated_title = $this->translateText($title);
+        $translated_title = $this->translate_text($title);
         if ($translated_title) {
-            error_log('Original product title: ' . $title);
-            error_log('Translated product title: ' . $translated_title);
+            $this->log_message('Original product title: ' . $title);
+            $this->log_message('Translated product title: ' . $translated_title);
             $product_data['title'] = $translated_title;
         } else {
-            error_log('Product title translation failed, using original: ' . $title);
+            $this->log_message('Product title translation failed, using original: ' . $title);
             $product_data['title'] = $title;
         }
 
-        error_log('Generating content for product');
-        $ai_response = $this->generateContentFromAi(
+        $this->log_message('Generating content for product');
+        $ai_response = $this->generate_content_from_ai(
             $product_data['title'],
-            $product_data['description'] ?? null,
+            isset($product_data['description']) ? $product_data['description'] : null,
             true
         );
 
-        $price_block = $this->generatePriceBlock($product_data, $dynamic_esc_url);
-        $amazon_link_block = $this->amazonBlock($product_data, $dynamic_esc_url, $advertiser_data, null);
-        $date_block = $this->dateBlock();
+        $price_block = $this->generate_price_block($product_data, $dynamic_esc_url);
+        $amazon_link_block = $this->amazon_block($product_data, $dynamic_esc_url, $advertiser_data, null);
+        $date_block = $this->date_block();
         $commission_text = '<p>**Adealsweden makes commission on any purchases through the links.</p>';
 
         $post_content = $ai_response['content'] . "\n\n" .
@@ -77,35 +128,35 @@ class PostCreator
             $date_block . "\n\n" .
             $commission_text;
 
-        error_log('Constructed post content length: ' . strlen($post_content));
+        $this->log_message('Constructed post content length: ' . strlen($post_content));
 
         $post_data = array(
             'post_title'    => wp_strip_all_tags($ai_response['title']),
             'post_content'  => $post_content,
             'post_excerpt'  => $price_block,
-            'post_status'  => $schedule_data['post_status'],
-            'post_date'    => $schedule_data['post_date'], 
+            'post_status'   => $schedule_data['post_status'],
+            'post_date'     => $schedule_data['post_date'], 
             'post_author'   => 1,
             'post_type'     => 'post'
         );
 
         if ($schedule_data) {
             $post_data = array_merge($post_data, $schedule_data);
-            error_log("Scheduling post for: " . $schedule_data['post_date']);
+            $this->log_message("Scheduling post for: " . $schedule_data['post_date']);
         } else {
             $post_data['post_status'] = 'publish';
         }
 
-        error_log('Inserting post with data: ' . print_r($post_data, true));
+        $this->log_message('Inserting post with data: ' . print_r($post_data, true));
 
         $post_id = wp_insert_post($post_data, true);
 
         if (is_wp_error($post_id)) {
-            error_log('Failed to create post: ' . $post_id->get_error_message());
+            $this->log_message('Failed to create post: ' . $post_id->get_error_message());
             return false;
         }
 
-        error_log('Successfully created post with ID: ' . $post_id);
+        $this->log_message('Successfully created post with ID: ' . $post_id);
 
         update_post_meta($post_id, '_Amazone_produt_baseName', $product_id);
         update_post_meta($post_id, '_product_url', $product_data['trackingLink']);
@@ -114,7 +165,7 @@ class PostCreator
         update_post_meta($post_id, '_discount_price', $product_data['sale_price']);
 
         if (!empty($product_data['image_link'])) {
-            $this->setFeatured($post_id, $product_data['image_link']);
+            $this->set_featured_image($post_id, $product_data['image_link']);
         }
 
         if (!empty($advertiser_data['displayName'])) {
@@ -142,109 +193,79 @@ class PostCreator
             }
         }
 
-        // if (!empty($product_data['google_product_category'])) {
-        //     // Skip if numeric (Google taxonomy ID)
-        //     if (is_numeric($product_data['google_product_category'])) {
-        //         error_log('Skipping numeric Google taxonomy ID: ' . $product_data['google_product_category']);
-        //         return;
-        //     }
-
-        //     $category = $product_data['google_product_category'];
-        //     error_log('Processing category string: ' . $category);
-
-        //     $category_id = $this->createCategory($category);
-        //     error_log('Got category ID: ' . $category_id);
-
-        //     if ($category_id > 0) {
-        //         // Get the category hierarchy as terms
-        //         $category_hierarchy = array_filter(array_map('trim', explode('>', $category)));
-        //         $terms = [];
-
-        //         // Get all terms in the hierarchy
-        //         foreach ($category_hierarchy as $cat_name) {
-        //             $term = get_term_by('name', $cat_name, 'product_categories');
-        //             if ($term) {
-        //                 $terms[] = $term->term_id;
-        //             }
-        //         }
-
-        //         error_log('Category terms to set: ' . print_r($terms, true));
-
-        //         // Set all terms in the hierarchy
-        //         $result = wp_set_object_terms($post_id, $terms, 'product_categories', false);
-        //         if (is_wp_error($result)) {
-        //             error_log('Error setting category terms: ' . $result->get_error_message());
-        //         } else {
-        //             error_log('Category terms set successfully: ' . print_r($result, true));
-
-        //             $set_terms = wp_get_object_terms($post_id, 'product_categories', array('fields' => 'names'));
-        //             error_log('Actual categories set: ' . print_r($set_terms, true));
-        //         }
-        //     }
-        // }
-
-        $this->setDiscountTag($post_id, $product_data['price'], $product_data['sale_price']);
-        update_post_meta($post_id, self::PFA_POST_IDENTIFIER, 'true');
-        error_log('Completed post creation successfully');
+        $this->set_discount_tag($post_id, $product_data['price'], $product_data['sale_price']);
+        update_post_meta($post_id, self::POST_IDENTIFIER, 'true');
+        $this->log_message('Completed post creation successfully');
         return $post_id;
-
     }
 
-
-    public function createManualProductPost($title, $featured_image, $product_url, $price, $sale_price, $brand, $category, $brand_image = '', $category_id = null)
-    {
-        error_log('Starting manual post creation with category: ' . $category);
-        error_log('Starting manual post creation with:');
-        error_log('Title: ' . $title);
-        error_log('Brand Image: ' . $brand_image);
-        error_log('Category ID: ' . ($category_id ?? 'null'));
+    /**
+     * Create a manual product post.
+     *
+     * @since    1.0.0
+     * @param    string    $title              Post title.
+     * @param    string    $featured_image     Featured image URL.
+     * @param    string    $product_url        Product URL.
+     * @param    float     $price              Original price.
+     * @param    float     $sale_price         Sale price.
+     * @param    string    $brand              Brand name.
+     * @param    string    $category           Product category.
+     * @param    string    $brand_image        Brand image URL (optional).
+     * @param    int       $category_id        Category ID (optional).
+     * @return   array                         Status array.
+     */
+    public function create_manual_product_post($title, $featured_image, $product_url, $price, $sale_price, $brand, $category, $brand_image = '', $category_id = null) {
+        $this->log_message('Starting manual post creation with category: ' . $category);
+        $this->log_message('Starting manual post creation with:');
+        $this->log_message('Title: ' . $title);
+        $this->log_message('Brand Image: ' . $brand_image);
+        $this->log_message('Category ID: ' . ($category_id ?? 'null'));
 
         $title = stripslashes($title);
         $title = trim($title, '"');
-        error_log('Title after cleanup: ' . $title);
+        $this->log_message('Title after cleanup: ' . $title);
 
         if (!empty($title)) {
-            $translated_title = $this->translateText($title);
+            $translated_title = $this->translate_text($title);
             if ($translated_title) {
-                error_log('Original title: ' . $title);
-                error_log('Translated title: ' . $translated_title);
+                $this->log_message('Original title: ' . $title);
+                $this->log_message('Translated title: ' . $translated_title);
                 $title = $translated_title;
             } else {
-                error_log('Title translation failed, using original: ' . $title);
+                $this->log_message('Title translation failed, using original: ' . $title);
             }
         } else {
-            error_log('Empty title provided');
+            $this->log_message('Empty title provided');
             return array('status' => 'error', 'message' => 'Empty title provided');
         }
 
-
-        $existing_post_id = $this->checkIfAlreadyInDb($product_url);
-        error_log('Duplicate check result - Post ID: ' . ($existing_post_id ? $existing_post_id : 'none'));
+        $existing_post_id = $this->check_if_already_in_db($product_url);
+        $this->log_message('Duplicate check result - Post ID: ' . ($existing_post_id ? $existing_post_id : 'none'));
 
         if ($existing_post_id) {
-            error_log('Found duplicate post - stopping creation. Post ID: ' . $existing_post_id);
+            $this->log_message('Found duplicate post - stopping creation. Post ID: ' . $existing_post_id);
             return array('status' => 'exists', 'post_id' => $existing_post_id);
         }
 
         $path = parse_url($product_url, PHP_URL_PATH);
         $amazone_prod_basename = basename($path);
 
-        $encoded_id = $this->encryptUnique($amazone_prod_basename);
+        $encoded_id = $this->encrypt_unique($amazone_prod_basename);
         $dynamic_url = site_url() . '/?pfa=' . urlencode($encoded_id);
         $dynamic_esc_url = esc_url($dynamic_url);
-        $ai_response = $this->generateContentFromAi($title);
+        $ai_response = $this->generate_content_from_ai($title);
 
-        $product_data = [
+        $product_data = array(
             'title' => $title,
             'price' => $price,
             'sale_price' => $sale_price,
             'advertiserDisplayName' => $brand,
             'image_link' => $brand_image
-        ];
+        );
 
-        $price_block = $this->generatePriceBlock($product_data, $dynamic_esc_url);
-        $amazon_link_block = $this->amazonBlock($product_data, $dynamic_esc_url, null, $brand_image);
-        $date_block = $this->dateBlock();
+        $price_block = $this->generate_price_block($product_data, $dynamic_esc_url);
+        $amazon_link_block = $this->amazon_block($product_data, $dynamic_esc_url, null, $brand_image);
+        $date_block = $this->date_block();
         $commission_text = '<p>**Adealsweden makes commission on any purchases through the links.</p>';
 
         $post_content = $ai_response['content'] . "\n\n" .
@@ -261,14 +282,13 @@ class PostCreator
             'post_type'     => 'post'
         );
 
-        error_log('Constructed post content length: ' . strlen($post_content));
-
-        error_log('Inserting post with data: ' . print_r($post_data, true));
+        $this->log_message('Constructed post content length: ' . strlen($post_content));
+        $this->log_message('Inserting post with data: ' . print_r($post_data, true));
 
         $post_id = wp_insert_post($post_data);
 
         if (is_wp_error($post_id)) {
-            error_log('Error creating post: ' . $post_id->get_error_message());
+            $this->log_message('Error creating post: ' . $post_id->get_error_message());
             return array('status' => 'error', 'message' => $post_id->get_error_message());
         }
 
@@ -279,18 +299,18 @@ class PostCreator
         update_post_meta($post_id, '_discount_price', $sale_price);
 
         if (!empty($featured_image)) {
-            $this->setFeatured($post_id, $featured_image);
+            $this->set_featured_image($post_id, $featured_image);
         }
 
         if (!empty($category)) {
-            error_log('Creating/getting category for: ' . $category);
-            $category_id = $this->createCategory($category);
-            error_log('Got category ID: ' . $category_id);
+            $this->log_message('Creating/getting category for: ' . $category);
+            $category_id = $this->create_category($category);
+            $this->log_message('Got category ID: ' . $category_id);
 
             if ($category_id > 0) {
                 // Get the category hierarchy as terms
                 $category_hierarchy = array_filter(array_map('trim', explode('>', $category)));
-                $terms = [];
+                $terms = array();
 
                 // Get all terms in the hierarchy
                 foreach ($category_hierarchy as $cat_name) {
@@ -300,23 +320,23 @@ class PostCreator
                     }
                 }
 
-                error_log('Category terms to set: ' . print_r($terms, true));
+                $this->log_message('Category terms to set: ' . print_r($terms, true));
 
                 // Set all terms in the hierarchy
                 $result = wp_set_object_terms($post_id, $terms, 'product_categories', false);
                 if (is_wp_error($result)) {
-                    error_log('Error setting category terms: ' . $result->get_error_message());
+                    $this->log_message('Error setting category terms: ' . $result->get_error_message());
                 } else {
-                    error_log('Category terms set successfully: ' . print_r($result, true));
+                    $this->log_message('Category terms set successfully: ' . print_r($result, true));
 
                     // Log the actual terms that were set
                     $set_terms = wp_get_object_terms($post_id, 'product_categories', array('fields' => 'names'));
-                    error_log('Actual categories set: ' . print_r($set_terms, true));
+                    $this->log_message('Actual categories set: ' . print_r($set_terms, true));
                 }
             }
         }
 
-        $this->setDiscountTag($post_id, $price, $sale_price);
+        $this->set_discount_tag($post_id, $price, $sale_price);
 
         if (!empty($brand)) {
             $store_type_term = wp_set_object_terms($post_id, $brand, 'store_type');
@@ -324,7 +344,7 @@ class PostCreator
                 $term_id = $store_type_term[0];
 
                 if (!empty($brand_image)) {
-                    error_log('Attempting to set brand image: ' . $brand_image);
+                    $this->log_message('Attempting to set brand image: ' . $brand_image);
                     require_once(ABSPATH . 'wp-admin/includes/media.php');
                     require_once(ABSPATH . 'wp-admin/includes/file.php');
                     require_once(ABSPATH . 'wp-admin/includes/image.php');
@@ -333,57 +353,78 @@ class PostCreator
                     if (!is_wp_error($image_id)) {
                         update_term_meta($term_id, 'featured_image', $image_id);
                         update_post_meta($image_id, '_brand_logo_image', '1');
-                        error_log('Successfully set brand image. Image ID: ' . $image_id);
+                        $this->log_message('Successfully set brand image. Image ID: ' . $image_id);
                     } else {
-                        error_log('Error setting brand image: ' . $image_id->get_error_message());
+                        $this->log_message('Error setting brand image: ' . $image_id->get_error_message());
                     }
                 }
             }
         }
 
-        error_log('Successfully created post with ID: ' . $post_id);
+        update_post_meta($post_id, self::POST_IDENTIFIER, 'true');
+        $this->log_message('Successfully created post with ID: ' . $post_id);
         return array('status' => 'success', 'post_id' => $post_id);
     }
 
-    private function setDiscountTag($post_id, $original_price, $sale_price)
-    {
-        $discount_percentage = $this->calculateDiscount($original_price, $sale_price);
+    /**
+     * Set discount tag for a post.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    int       $post_id         Post ID.
+     * @param    float     $original_price  Original price.
+     * @param    float     $sale_price      Sale price.
+     */
+    private function set_discount_tag($post_id, $original_price, $sale_price) {
+        $discount_percentage = $this->calculate_discount($original_price, $sale_price);
         if ($discount_percentage > 0) {
             update_post_meta($post_id, '_discount_percentage', $discount_percentage);
             $discount_tag_title = $discount_percentage . '% off';
-            error_log("Discount Tag Title to search/create: {$discount_tag_title}");
+            $this->log_message("Discount Tag Title to search/create: {$discount_tag_title}");
 
             $term = term_exists($discount_tag_title, 'post_tag');
             if (!$term) {
                 $term = wp_insert_term($discount_tag_title, 'post_tag');
-                error_log("Creating new tag: {$discount_tag_title}");
+                $this->log_message("Creating new tag: {$discount_tag_title}");
             } else {
-                error_log("Found existing tag for: {$discount_tag_title}");
+                $this->log_message("Found existing tag for: {$discount_tag_title}");
             }
 
             if (!is_wp_error($term)) {
-                wp_set_post_terms($post_id, [$discount_tag_title], 'post_tag', true);
-                error_log("Assigned tag '{$discount_tag_title}' to post {$post_id}");
+                wp_set_post_terms($post_id, array($discount_tag_title), 'post_tag', true);
+                $this->log_message("Assigned tag '{$discount_tag_title}' to post {$post_id}");
             } else {
-                error_log('Discount Tag Error: ' . $term->get_error_message());
+                $this->log_message('Discount Tag Error: ' . $term->get_error_message());
             }
         } else {
-            error_log('No discount to apply or prices are incorrect.');
+            $this->log_message('No discount to apply or prices are incorrect.');
         }
     }
 
-    private function generatePriceBlock($product_data, $display_url)
-    {
+    /**
+     * Generate price block HTML.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    array     $product_data   Product data.
+     * @param    string    $display_url    Display URL.
+     * @return   string                    Price block HTML.
+     */
+    private function generate_price_block($product_data, $display_url) {
         $original_price = round($product_data['price']);
-        $discount_price = round($product_data['sale_price'] ?? $product_data['sale_price']);
+        $discount_price = round(isset($product_data['sale_price']) ? $product_data['sale_price'] : $product_data['sale_price']);
 
         return '<div class="price_block"><a target="_blank" href="' . $display_url . '" rel="nofollow sponsored noopener"><span class="original-price">' . $original_price . ' SEK</span> <span class="discount-price">' . $discount_price . ' SEK</span></a></div>';
     }
 
-    public function checkIfAlreadyInDb($link)
-    {
-        // error_log('Checking for duplicate post with link: ' . $link);
-
+    /**
+     * Check if a product already exists in the database.
+     *
+     * @since    1.0.0
+     * @param    string    $link    Product URL.
+     * @return   int|false          Post ID if exists, false otherwise.
+     */
+    public function check_if_already_in_db($link) {
         $parsed_url = parse_url($link);
         $actual_product_url = $link;
 
@@ -391,13 +432,11 @@ class PostCreator
             parse_str($parsed_url['query'], $query_params);
             if (isset($query_params['u'])) {
                 $actual_product_url = urldecode($query_params['u']);
-                // error_log('Decoded actual product URL: ' . $actual_product_url);
             }
         }
 
         $product_path = parse_url($actual_product_url, PHP_URL_PATH);
         $amazone_prod_basename = basename($product_path);
-        // error_log('Extracted basename: ' . $amazone_prod_basename);
 
         global $wpdb;
 
@@ -419,44 +458,54 @@ class PostCreator
             $amazone_prod_basename
         );
 
-        // error_log('Executing duplicate check query: ' . $query);
         $result = $wpdb->get_row($query);
 
         if ($result) {
-            // error_log('Found existing post - ID: ' . $result->ID . ', Title: ' . $result->post_title);
             return intval($result->ID);
         }
 
-        error_log('No existing post found');
+        $this->log_message('No existing post found');
         return false;
     }
 
-    public function cleanupMeta($post_id)
-    {
+    /**
+     * Clean up post meta when a post is deleted.
+     *
+     * @since    1.0.0
+     * @param    int       $post_id    Post ID.
+     */
+    public function cleanup_meta($post_id) {
         global $wpdb;
 
-        $meta_keys = [
+        $meta_keys = array(
             '_Amazone_produt_baseName',
             '_Amazone_produt_link',
             'dynamic_amazone_link',
             'dynamic_link',
             '_discount_price'
-        ];
+        );
 
         foreach ($meta_keys as $meta_key) {
             $wpdb->delete(
                 $wpdb->postmeta,
-                [
+                array(
                     'post_id' => $post_id,
                     'meta_key' => $meta_key
-                ]
+                )
             );
         }
     }
 
-
-    public function imageExists($image_url, $post_id)
-    {
+    /**
+     * Check if an image exists for a post.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    string    $image_url    Image URL.
+     * @param    int       $post_id      Post ID.
+     * @return   boolean                 True if image exists, false otherwise.
+     */
+    private function image_exists($image_url, $post_id) {
         $args = array(
             'post_type' => 'attachment',
             'post_parent' => $post_id,
@@ -472,30 +521,47 @@ class PostCreator
         return !empty($existing_images);
     }
 
-    public function setFeatured($post_id, $image_url, $post_title = '')
-    {
+    /**
+     * Set featured image for a post.
+     *
+     * @since    1.0.0
+     * @param    int       $post_id      Post ID.
+     * @param    string    $image_url    Image URL.
+     * @param    string    $post_title   Post title (optional).
+     * @return   boolean                 True on success, false on failure.
+     */
+    public function set_featured_image($post_id, $image_url, $post_title = '') {
         if (empty($image_url) || empty($post_id)) {
             return false;
         }
 
-        if (!$this->imageExists($image_url, $post_id)) {
+        if (!$this->image_exists($image_url, $post_id)) {
+            require_once(ABSPATH . 'wp-admin/includes/media.php');
+            require_once(ABSPATH . 'wp-admin/includes/file.php');
+            require_once(ABSPATH . 'wp-admin/includes/image.php');
+            
             $image_id = media_sideload_image($image_url, $post_id, $post_title, 'id');
             if (!is_wp_error($image_id)) {
                 set_post_thumbnail($post_id, $image_id);
                 return true;
             } else {
-                error_log("Failed to set featured image for post ID $post_id: " . $image_id->get_error_message());
+                $this->log_message("Failed to set featured image for post ID $post_id: " . $image_id->get_error_message());
                 return false;
             }
         } else {
-            error_log("Image already exists for post ID $post_id. Skipping featured image update.");
+            $this->log_message("Image already exists for post ID $post_id. Skipping featured image update.");
             return false;
         }
     }
 
-    public function createCategory($category_name)
-    {
-
+    /**
+     * Create a category hierarchy.
+     *
+     * @since    1.0.0
+     * @param    string|array    $category_name    Category name or hierarchy.
+     * @return   int                               Last term ID in hierarchy.
+     */
+    public function create_category($category_name) {
         if (!is_array($category_name)) {
             $category_hierarchy = array_filter(array_map('trim', explode('>', $category_name)));
         } else {
@@ -516,7 +582,7 @@ class PostCreator
                 ));
 
                 if (is_wp_error($new_term)) {
-                    error_log('Error creating category: ' . $new_term->get_error_message());
+                    $this->log_message('Error creating category: ' . $new_term->get_error_message());
                     continue;
                 }
 
@@ -531,8 +597,15 @@ class PostCreator
         return $last_term_id;
     }
 
-    public function calculateDiscount($original_price, $sale_price)
-    {
+    /**
+     * Calculate discount percentage.
+     *
+     * @since    1.0.0
+     * @param    float     $original_price    Original price.
+     * @param    float     $sale_price        Sale price.
+     * @return   int                          Discount percentage.
+     */
+    public function calculate_discount($original_price, $sale_price) {
         if ($original_price <= 0 || $sale_price >= $original_price) {
             return 0;
         }
@@ -540,29 +613,40 @@ class PostCreator
         return round($percentage / 5) * 5;
     }
 
-    public function amazonBlock($product_data, $display_url, $advertiser_data = null, $brand_image = null)
-    {
-        error_log('Product Data: ' . print_r($product_data, true));
-        error_log('Advertiser Data: ' . print_r($advertiser_data, true));
-        error_log('Manual Brand Image: ' . $brand_image);
+    /**
+     * Generate Amazon block HTML.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    array     $product_data      Product data.
+     * @param    string    $display_url       Display URL.
+     * @param    array     $advertiser_data   Advertiser data (optional).
+     * @param    string    $brand_image       Brand image URL (optional).
+     * @return   string                       Amazon block HTML.
+     */
+    private function amazon_block($product_data, $display_url, $advertiser_data = null, $brand_image = null) {
+        $this->log_message('Product Data: ' . print_r($product_data, true));
+        $this->log_message('Advertiser Data: ' . print_r($advertiser_data, true));
+        $this->log_message('Manual Brand Image: ' . $brand_image);
 
         $original_price = round($product_data['price']);
-        $discount_price = round($product_data['sale_price'] ?? $product_data['sale_price']);
+        $discount_price = round(isset($product_data['sale_price']) ? $product_data['sale_price'] : $product_data['sale_price']);
 
         $default_logo = 'https://www.adealsweden.com/wp-content/uploads/2023/12/amazon_se_logo_RGB_REV-1.png';
 
         if (!empty($brand_image)) {
             $advertiser_logo = $brand_image;
-            error_log('Using manual brand image: ' . $advertiser_logo);
+            $this->log_message('Using manual brand image: ' . $advertiser_logo);
         } elseif (!empty($advertiser_data['logoImageFilename'])) {
             $advertiser_logo = $advertiser_data['logoImageFilename'];
-            error_log('Using advertiser logo: ' . $advertiser_logo);
+            $this->log_message('Using advertiser logo: ' . $advertiser_logo);
         } else {
             $advertiser_logo = $default_logo;
-            error_log('Using default logo');
+            $this->log_message('Using default logo');
         }
 
-        $advertiser_name = $advertiser_data['displayName'] ?? $product_data['brand'] ?? 'Retailer';
+        $advertiser_name = isset($advertiser_data['displayName']) ? $advertiser_data['displayName'] : 
+                          (isset($product_data['brand']) ? $product_data['brand'] : 'Retailer');
 
         return '<div class="product-link_wrap" data-href="' . $display_url . '" target="_blank" rel="nofollow sponsored">
                 <div class="button-block">
@@ -584,17 +668,26 @@ class PostCreator
             </div>';
     }
 
-    public function dateBlock()
-    {
+    /**
+     * Generate date block HTML.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @return   string    Date block HTML.
+     */
+    private function date_block() {
         return '<p> **Price last checked ' . current_time('Y-m-d H:i') . ' ' . wp_timezone_string() . '</p>';
     }
 
-
-    public function handleRedirect()
-    {
+    /**
+     * Handle redirect for dynamic product URLs.
+     *
+     * @since    1.0.0
+     */
+    public function handle_redirect() {
         if (isset($_GET['pfa'])) {
             $encoded = sanitize_text_field($_GET['pfa']);
-            $amazone_prod_basename = $this->decryptUnique($encoded);
+            $amazone_prod_basename = $this->decrypt_unique($encoded);
 
             global $wpdb;
 
@@ -617,25 +710,45 @@ class PostCreator
         }
     }
 
-    public function encryptUnique($string)
-    {
+    /**
+     * Encrypt a string for unique URL.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    string    $string    String to encrypt.
+     * @return   string               Encrypted string.
+     */
+    private function encrypt_unique($string) {
         return rtrim(strtr(base64_encode($string), '+/', '-_'), '=');
     }
 
-    public function decryptUnique($string)
-    {
+    /**
+     * Decrypt a unique URL string.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    string    $string    String to decrypt.
+     * @return   string               Decrypted string.
+     */
+    private function decrypt_unique($string) {
         return base64_decode(str_pad(strtr($string, '-_', '+/'), strlen($string) % 4, '=', STR_PAD_RIGHT));
     }
 
-    public function generateShortUrl($amaz_url)
-    {
+    /**
+     * Generate a short URL.
+     *
+     * @since    1.0.0
+     * @param    string    $amaz_url    URL to shorten.
+     * @return   string                 Shortened URL.
+     */
+    public function generate_short_url($amaz_url) {
         $curl = curl_init();
 
         curl_setopt_array($curl, array(
             CURLOPT_URL => "https://api.apilayer.com/short_url/hash",
             CURLOPT_HTTPHEADER => array(
                 "Content-Type: text/plain",
-                "apikey: GAa0LGlu0iFlm7zshsR9Oa6Ojb9lGbvl"
+                "apikey: YOUR_API_KEY" // Replace with proper API key management
             ),
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_ENCODING => "",
@@ -652,7 +765,7 @@ class PostCreator
         curl_close($curl);
 
         if ($err) {
-            error_log("cURL Error in pfa_generate_short_url_using_api: " . $err);
+            $this->log_message("cURL Error in generate_short_url: " . $err);
             return $amaz_url;
         }
 
@@ -660,47 +773,24 @@ class PostCreator
         return $url_data->short_url;
     }
 
-    public function pfa_translate_content_with_google($content, $target_language = 'sv')
-    {
-        $api_key = 'AIzaSyCs4UkBK43F8sLBS40eTnhkqMvZKIc5EVU';
-        $url = 'https://translation.googleapis.com/language/translate/v2';
-        $args = array(
-            'body' => json_encode(array(
-                'q' => $content,
-                'target' => $target_language,
-                'format' => 'text'
-            )),
-            'headers' => array(
-                'Content-Type' => 'application/json',
-                'Authorization' => 'Bearer ' . $api_key,
-            ),
-            'method' => 'POST',
-            'data_format' => 'body',
-        );
-
-        $response = wp_remote_post($url, $args);
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-
-        if (isset($data['data']['translations'][0]['translatedText'])) {
-            return $data['data']['translations'][0]['translatedText'];
-        }
-
-        return false;
-    }
-
-    public function translateText($text)
-    {
+    /**
+     * Translate text using Google Translate API.
+     *
+     * @since    1.0.0
+     * @param    string    $text             Text to translate.
+     * @param    string    $target_language  Target language (default: 'en').
+     * @return   string|false               Translated text or false on failure.
+     */
+    public function translate_text($text) {
         if (empty($text)) {
-            error_log('Empty text provided for translation');
+            $this->log_message('Empty text provided for translation');
             return false;
         }
-
 
         $text = trim(stripslashes($text));
         $text = strip_tags($text);
 
-        error_log('Translation input text: ' . $text);
+        $this->log_message('Translation input text: ' . $text);
 
         $curlSession = curl_init();
         $encoded_text = urlencode($text);
@@ -713,12 +803,12 @@ class PostCreator
         $response = curl_exec($curlSession);
 
         if (curl_errno($curlSession)) {
-            error_log('Translation curl error: ' . curl_error($curlSession));
+            $this->log_message('Translation curl error: ' . curl_error($curlSession));
             curl_close($curlSession);
             return false;
         }
 
-        error_log('Translation API response: ' . $response);
+        $this->log_message('Translation API response: ' . $response);
 
         $jsonData = json_decode($response);
         curl_close($curlSession);
@@ -733,16 +823,24 @@ class PostCreator
             }
 
             $translated = trim($translated);
-            error_log('Successfully translated text: ' . $translated);
+            $this->log_message('Successfully translated text: ' . $translated);
             return !empty($translated) ? $translated : $text;
         }
 
-        error_log('Translation failed - Invalid JSON response');
+        $this->log_message('Translation failed - Invalid JSON response');
         return $text;
     }
 
-    public function generateContentFromAi($blogs_title, $product_description = null, $is_automated = false)
-    {
+    /**
+     * Generate content using AI.
+     *
+     * @since    1.0.0
+     * @param    string     $blogs_title           Blog post title.
+     * @param    string     $product_description   Product description (optional).
+     * @param    boolean    $is_automated          Whether this is automated (optional).
+     * @return   array|string                      AI response or error message.
+     */
+    public function generate_content_from_ai($blogs_title, $product_description = null, $is_automated = false) {
         $blogs_title = strtr($blogs_title, array(
             utf8_encode('�') => "ö",
             utf8_encode('�') => "å",
@@ -756,31 +854,31 @@ class PostCreator
         ));
 
         $ai_api_key = get_option('ai_api_key');
-        $max_tokens = (float) get_option('max_tokens');
-        $temperature = (float) get_option('temperature');
-        $frequency_penalty = (float) get_option('frequency_penalty');
-        $presence_penalty = (float) get_option('presence_penalty');
+        $max_tokens = (float) get_option('max_tokens', 1000);
+        $temperature = (float) get_option('temperature', 0.7);
+        $frequency_penalty = (float) get_option('frequency_penalty', 0);
+        $presence_penalty = (float) get_option('presence_penalty', 0);
 
         if ($is_automated && $product_description) {
             $prompt_for_ai = "As an SEO-copywriter expert, translate if needed title to short and concise title, keeping as much from original input as possible (but all must be English). And write a fact based 500+ words description based on information in input, three paragraphs with no fluff in English. Format as Title: Output Description: Output. Do not treat the first words in input as brand, blacklisted topics & words are English, Note, Guide, Enhance, Block and SEO in output, do not end with a CTA or Note for. Product title: {$blogs_title}. Product description: {$product_description}";
         } else {
-            $prompt_for_ai = get_option('prompt_for_ai');
+            $prompt_for_ai = get_option('prompt_for_ai', 'Write a product description for');
             $prompt_for_ai .= ': ' . $blogs_title;
         }
 
-        error_log('The Prompt: ' . $prompt_for_ai);
+        $this->log_message('The Prompt: ' . $prompt_for_ai);
 
-        $ai_model = get_option('ai_model');
+        $ai_model = get_option('ai_model', 'gpt-3.5-turbo');
         $url = "https://api.openai.com/v1/chat/completions";
 
-        $headers = [
+        $headers = array(
             'Authorization: Bearer ' . $ai_api_key,
             'Content-Type: application/json',
-        ];
+        );
 
         $data = array(
             "model" => $ai_model,
-            "messages" => [
+            "messages" => array(
                 array(
                     "role" => "system",
                     "content" => "You are a helpful assistant and a professional product copywriter"
@@ -789,7 +887,7 @@ class PostCreator
                     "role" => "user",
                     "content" => $prompt_for_ai
                 )
-            ],
+            ),
             "max_tokens" => $max_tokens,
             "temperature" => $temperature,
             "frequency_penalty" => $frequency_penalty,
@@ -810,33 +908,46 @@ class PostCreator
             $response_data = json_decode($response, true);
             $generated_text = $response_data['choices'][0]['message']['content'];
 
-            error_log('Raw AI response: ' . $generated_text);
+            $this->log_message('Raw AI response: ' . $generated_text);
 
             if (str_contains($generated_text, 'Title:')) {
                 $title_parts = explode('Title:', trim($generated_text));
                 $content_split = explode('Description:', end($title_parts));
 
-                $title = trim(str_replace(['Output', '**'], '', $content_split[0]));
+                $title = trim(str_replace(array('Output', '**'), '', $content_split[0]));
                 $content = trim($content_split[1]);
 
-                return [
+                return array(
                     'title' => $title,
                     'content' => $content
-                ];
+                );
             } else {
                 $content_split = explode(':', trim($generated_text));
-                return [
+                return array(
                     'title' => trim($content_split[1]),
                     'content' => trim($content_split[2])
-                ];
+                );
             }
         } else {
             $error_message = "HTTP Error: " . $http_code . "\n";
             $error_message .= "Response: " . $response . "\n";
             $error_message .= "API Key (first 5 chars): " . substr($ai_api_key, 0, 5) . "...\n";
             $error_message .= "AI Model: " . $ai_model . "\n";
-            error_log($error_message);
+            $this->log_message($error_message);
             return $error_message;
+        }
+    }
+    
+    /**
+     * Log messages to error log.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    string    $message    Message to log.
+     */
+    private function log_message($message) {
+        if (defined('WP_DEBUG') && WP_DEBUG) {
+            error_log('[PFA Creator] ' . $message);
         }
     }
 }

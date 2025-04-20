@@ -1,0 +1,184 @@
+/**
+ * Admin CSS for Product Feed Automation
+ *
+ * @package    Product_Feed_Automation
+ */
+
+/* General */
+.pfa-admin-wrap {
+    margin: 20px 0;
+}
+
+.pfa-admin-container {
+    max-width: 1200px;
+}
+
+/* Columns Layout */
+.pfa-columns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.pfa-column {
+    flex: 1;
+    min-width: 300px;
+}
+
+/* Panels */
+.pfa-panel {
+    background: #fff;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    box-shadow: 0 1px 1px rgba(0, 0, 0, 0.04);
+    padding: 15px;
+    margin-bottom: 20px;
+}
+
+.pfa-panel h2 {
+    margin-top: 0;
+    padding-bottom: 12px;
+    border-bottom: 1px solid #eee;
+}
+
+.pfa-panel h3 {
+    margin: 1.5em 0 0.5em;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #f0f0f0;
+}
+
+/* Status Indicators */
+#automation_status_indicator {
+    display: inline-block;
+    padding: 5px 10px;
+    border-radius: 3px;
+    margin-left: 10px;
+}
+
+#automation_status_indicator.active {
+    background-color: #d4edda;
+    color: #155724;
+    border: 1px solid #c3e6cb;
+}
+
+#automation_status_indicator.inactive {
+    background-color: #f8d7da;
+    color: #721c24;
+    border: 1px solid #f5c6cb;
+}
+
+/* Status Details */
+.pfa-status-details {
+    background: #f9f9f9;
+    padding: 15px;
+    border-radius: 4px;
+    margin: 15px 0;
+}
+
+.pfa-main-status,
+.pfa-api-status {
+    padding-bottom: 15px;
+    margin-bottom: 15px;
+    border-bottom: 1px solid #eee;
+}
+
+.pfa-system-info {
+    color: #666;
+    font-size: 0.9em;
+}
+
+/* Form Elements */
+.form-table th {
+    width: 200px;
+    font-weight: 600;
+}
+
+.form-table td {
+    vertical-align: middle;
+}
+
+.form-table input[type="text"],
+.form-table input[type="number"],
+.form-table input[type="password"],
+.form-table input[type="url"],
+.form-table select,
+.form-table textarea {
+    width: 100%;
+    max-width: 400px;
+}
+
+textarea {
+    min-height: 100px;
+}
+
+/* Countdown Timer */
+.pfa-countdown-timer {
+    font-size: 0.9em;
+    color: #666;
+    margin-left: 10px;
+}
+
+/* Action Buttons */
+.pfa-status-actions {
+    margin-top: 15px;
+}
+
+.pfa-status-actions button,
+.button-primary {
+    margin-right: 10px;
+}
+
+/* Notices */
+.pfa-workflow-notice {
+    background: #fff;
+    border-left: 4px solid #46b450;
+    box-shadow: 0 1px 1px rgba(0,0,0,.1);
+    margin: 5px 0 15px;
+    padding: 1px 12px;
+}
+
+.pfa-workflow-error {
+    border-left-color: #dc3232;
+}
+
+/* Animation */
+.pfa-spinning {
+    animation: pfa-spin 2s linear infinite;
+}
+
+@keyframes pfa-spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Responsive */
+@media screen and (max-width: 782px) {
+    .pfa-columns {
+        flex-direction: column;
+    }
+    
+    .pfa-column {
+        width: 100%;
+    }
+    
+    .form-table th,
+    .form-table td {
+        display: block;
+        width: 100%;
+        padding: 10px 0;
+    }
+
+    .form-table th {
+        padding-bottom: 0;
+    }
+
+    .form-table input[type="text"],
+    .form-table input[type="number"],
+    .form-table input[type="password"],
+    .form-table input[type="url"],
+    .form-table select,
+    .form-table textarea {
+        max-width: none;
+    }
+}
