@@ -45,6 +45,7 @@ class Product_Feed_Automation {
         $this->load_dependencies();
         $this->define_admin_hooks();
         $this->define_cron_hooks();
+        $this->initialize_plugin();
         $this->run();
     }
 
@@ -68,10 +69,10 @@ class Product_Feed_Automation {
         require_once PFA_PLUGIN_DIR . 'includes/classes/class-pfa-loader.php';
         
         // Core plugin classes
-        require_once PFA_PLUGIN_DIR . 'includes/classes/class-api-fetcher.php';
-        require_once PFA_PLUGIN_DIR . 'includes/classes/class-post-creator.php';
-        require_once PFA_PLUGIN_DIR . 'includes/classes/class-post-scheduler.php';
-        require_once PFA_PLUGIN_DIR . 'includes/classes/class-queue-manager.php';
+        require_once PFA_PLUGIN_DIR . 'includes/classes/class-pfa-api-fetcher.php';
+        require_once PFA_PLUGIN_DIR . 'includes/classes/class-pfa-post-creator.php';
+        require_once PFA_PLUGIN_DIR . 'includes/classes/class-pfa-post-scheduler.php';
+        require_once PFA_PLUGIN_DIR . 'includes/classes/class-pfa-queue-manager.php';
         
         // Admin functionality
         require_once PFA_PLUGIN_DIR . 'admin/class-pfa-admin.php';
@@ -80,6 +81,88 @@ class Product_Feed_Automation {
         require_once PFA_PLUGIN_DIR . 'includes/functions/ajax-functions.php';
         
         $this->loader = new PFA_Loader();
+    }
+
+    /**
+     * Initialize plugin settings and schedules.
+     */
+    private function initialize_plugin() {
+        static $initialized = false;
+        if ($initialized) {
+            return;
+        }
+        $initialized = true;
+        
+        $dripfeed_interval = get_option('dripfeed_interval', 30);
+        
+        if (!wp_next_scheduled('pfa_daily_check') && 
+            !wp_next_scheduled('pfa_dripfeed_publisher') && 
+            !wp_next_scheduled('pfa_api_check')) {
+            
+            wp_clear_scheduled_hook('pfa_daily_check');
+            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+            wp_clear_scheduled_hook('pfa_api_check');
+            
+            wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
+            
+            $check_interval = get_option('check_interval', 'daily');
+            wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+            wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
+        }
+        
+        add_filter('cron_schedules', function($schedules) use ($dripfeed_interval) {
+            $schedules["minutes_{$dripfeed_interval}"] = array(
+                'interval' => $dripfeed_interval * 60,
+                'display' => sprintf(__('Every %d minutes'), $dripfeed_interval)
+            );
+            return $schedules;
+        });
+
+        // Add additional functionality from init.php
+        add_action('pre_get_posts', function($query) {
+            if (!is_admin()) {
+                $query->set('post_status', 'publish'); 
+            }
+        });
+
+        // Set up clean stale identifiers functionality
+        if (!wp_next_scheduled('pfa_clean_identifiers')) {
+            wp_schedule_event(strtotime('tomorrow 05:00:00'), 'daily', 'pfa_clean_identifiers');
+        }
+        
+        // Hook for post deletion
+        add_action('before_delete_post', function ($post_id) {
+            if (get_post_type($post_id) !== 'post') {
+                return;
+            }
+            
+            $basename = get_post_meta($post_id, '_Amazone_produt_baseName', true);
+            $gtin = get_post_meta($post_id, '_product_gtin', true);
+            $mpn = get_post_meta($post_id, '_product_mpn', true);
+            
+            if ($basename) {
+                $product_identifier = md5($basename . '|' . ($gtin ?? '') . '|' . ($mpn ?? ''));
+                
+                $existing_identifiers = get_option('pfa_product_identifiers', []);
+                if (($key = array_search($product_identifier, $existing_identifiers)) !== false) {
+                    unset($existing_identifiers[$key]);
+                    update_option('pfa_product_identifiers', $existing_identifiers);
+                    error_log("Identifier removed for deleted post ID: $post_id, Identifier: $product_identifier");
+                }
+            }
+        });
+        
+        // Add cleanup when post is archived
+        add_action('wp_trash_post', function($post_id) {
+            $scheduler = PFA_Post_Scheduler::get_instance();
+            $scheduler->clean_stale_identifiers();
+        });
+        
+        // Add cleanup before daily queue check
+        add_action('pfa_daily_check', function() {
+            $scheduler = PFA_Post_Scheduler::get_instance();
+            $scheduler->clean_stale_identifiers();
+        }, 5); // Priority 5 means it runs before the normal daily check
     }
 
     /**
@@ -132,6 +215,17 @@ class Product_Feed_Automation {
     }
 
     /**
+     * Plugin deactivation hook.
+     */
+    public static function deactivate_plugin() {
+        // Clear scheduled hooks
+        $scheduler = PFA_Post_Scheduler::get_instance();
+        if (method_exists($scheduler, 'clear_all_schedules')) {
+            $scheduler->clear_all_schedules();
+        }
+    }
+
+    /**
      * Add settings page to admin menu.
      */
     public function add_settings_page() {
@@ -181,6 +275,9 @@ class Product_Feed_Automation {
         }
     }
 }
+
+// Register deactivation hook
+register_deactivation_hook(__FILE__, array('Product_Feed_Automation', 'deactivate_plugin'));
 
 /**
  * Returns the main instance of the plugin.

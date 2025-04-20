@@ -64,7 +64,6 @@ foreach ($transients as $transient) {
 }
 
 // Optional: Remove posts created by this plugin
-// Uncomment if you want to delete all posts created by this plugin
 /*
 global $wpdb;
 
