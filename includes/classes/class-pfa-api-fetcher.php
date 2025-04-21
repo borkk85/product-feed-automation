@@ -73,7 +73,7 @@ class PFA_API_Fetcher {
      * @since    1.0.0
      * @access   protected
      */
-    protected function __wakeup() {}
+    public function __wakeup() {}
 
     /**
      * Constructor.

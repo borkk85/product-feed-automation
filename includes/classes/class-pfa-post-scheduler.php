@@ -129,7 +129,7 @@ class PFA_Post_Scheduler {
      * @since    1.0.0
      * @access   protected
      */
-    protected function __wakeup() {}
+    public function __wakeup() {}
 
     /**
      * Register WordPress hooks.

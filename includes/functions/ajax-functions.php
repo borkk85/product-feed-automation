@@ -199,6 +199,10 @@ function pfa_check_discount_results() {
 
         $post_creator = PFA_Post_Creator::get_instance();
         $api_fetcher = PFA_API_Fetcher::get_instance();
+        
+        // Set a time limit for the operation (5 minutes)
+        set_time_limit(300);
+        
         $products = $api_fetcher->fetch_products(true);
         
         if (empty($products)) {
@@ -217,22 +221,69 @@ function pfa_check_discount_results() {
             return $discount >= $min_discount;
         });
 
-        $actually_eligible = array_filter($discounted_products, function($product) use ($post_creator) {
-            $product_identifier = md5($product['id'] . '|' . (isset($product['gtin']) ? $product['gtin'] : '') . '|' . (isset($product['mpn']) ? $product['mpn'] : ''));
-            $exists = in_array($product_identifier, get_option('pfa_product_identifiers', array()));
-            $inDb = $post_creator->check_if_already_in_db($product['trackingLink']);
-            return !$exists && !$inDb;
-        });
+        // Process eligibility check with progress tracking to avoid timeouts
+        $total_products = count($discounted_products);
+        $eligible_count = 0;
+        $check_batch_size = 50; // Process in batches of 50 products
+        $batch_limit = 10; // Maximum number of batches to process (adjust as needed)
+        $processed_count = 0;
+        $products_checked = 0;
+        
+        // Get existing identifiers
+        $existing_identifiers = get_option('pfa_product_identifiers', array());
+        
+        // Process in batches to avoid timeouts
+        $batches = array_chunk($discounted_products, $check_batch_size);
+        
+        foreach ($batches as $index => $batch) {
+            if ($index >= $batch_limit) {
+                // We've processed enough batches - exit the loop to avoid timeout
+                break;
+            }
+            
+            foreach ($batch as $product) {
+                $products_checked++;
+                $product_identifier = md5($product['id'] . '|' . (isset($product['gtin']) ? $product['gtin'] : '') . '|' . (isset($product['mpn']) ? $product['mpn'] : ''));
+                $exists = in_array($product_identifier, $existing_identifiers);
+                
+                if (!$exists) {
+                    $inDb = $post_creator->check_if_already_in_db($product['trackingLink']);
+                    if (!$inDb) {
+                        $eligible_count++;
+                    }
+                }
+            }
+            
+            $processed_count += count($batch);
+            
+            // Reset max execution time for each batch to prevent timeout
+            set_time_limit(30);
+        }
+        
+        // Calculate total eligible products
+        // If we processed all products, use the actual count
+        // Otherwise, use a projection based on the percentage of eligible products so far
+        $total_eligible = $eligible_count;
+        if ($processed_count < $total_products) {
+            // Calculate ratio of eligible products in the processed batch
+            $ratio = ($processed_count > 0) ? $eligible_count / $processed_count : 0;
+            // Project total eligible products
+            $total_eligible = round($ratio * $total_products);
+        }
 
         $results = array(
-            'total_hits' => count($actually_eligible),
+            'total_hits' => $total_eligible,
             'total_products' => count($products),
             'in_stock_count' => count($in_stock_products),
+            'discounted_count' => count($discounted_products),
             'min_discount' => $min_discount,
             'last_check_time' => current_time('mysql'),
             'next_scheduled_check' => wp_next_scheduled('pfa_daily_check') 
                 ? wp_date('Y-m-d H:i:s T', wp_next_scheduled('pfa_daily_check')) 
-                : 'Not scheduled'
+                : 'Not scheduled',
+            'processed_percentage' => ($total_products > 0) ? round(($processed_count / $total_products) * 100) : 100,
+            'processed_count' => $processed_count,
+            'products_checked' => $products_checked
         );
 
         update_option('pfa_last_total_products', $results['total_products']);
@@ -252,7 +303,6 @@ function pfa_check_discount_results() {
         ));
     }
 }
-add_action('wp_ajax_pfa_check_discount_results', 'pfa_check_discount_results');
 
 /**
  * Refresh queue status.

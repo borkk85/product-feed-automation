@@ -37,6 +37,7 @@
          */
         function refreshQueueStatus() {
             console.log("Refreshing queue status...");
+            $("#refresh-queue-status").prop("disabled", true).text("Refreshing...");
             
             $.ajax({
                 url: pfaData.ajaxurl,
@@ -55,6 +56,9 @@
                 },
                 error: function(xhr, status, error) {
                     console.error("Server error while refreshing queue status:", error);
+                },
+                complete: function() {
+                    $("#refresh-queue-status").prop("disabled", false).text("Refresh Status");
                 }
             });
         }

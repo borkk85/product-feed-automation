@@ -109,7 +109,7 @@ class PFA_Queue_Manager {
      * @since    1.0.0
      * @access   protected
      */
-    protected function __wakeup() {}
+    public function __wakeup() {}
     
     /**
      * Clear the status cache.
