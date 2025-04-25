@@ -44,6 +44,10 @@ function pfa_save_settings() {
         return;
     }
 
+    // Get the old discount value for comparison
+    $old_min_discount = get_option('min_discount', 0);
+    $new_min_discount = (int)sanitize_text_field($_POST['min_discount']);
+
     // Save API credentials
     update_option('addrevenue_api_key', sanitize_text_field($_POST['addrevenue_api_key']));
     update_option('ai_api_key', sanitize_text_field($_POST['ai_api_key']));
@@ -56,10 +60,36 @@ function pfa_save_settings() {
     update_option('prompt_for_ai', sanitize_textarea_field($_POST['prompt_for_ai']));
     
     // Save automation settings
-    update_option('min_discount', sanitize_text_field($_POST['min_discount']));
+    update_option('min_discount', $new_min_discount);
     update_option('max_posts_per_day', sanitize_text_field($_POST['max_posts_per_day']));
     update_option('check_interval', sanitize_text_field($_POST['check_interval']));
     update_option('dripfeed_interval', sanitize_text_field($_POST['dripfeed_interval']));
+
+    // If discount value changed, update the last check results display data
+    if ($old_min_discount != $new_min_discount) {
+        error_log('Discount value changed from ' . $old_min_discount . ' to ' . $new_min_discount . '. Updating last check display.');
+        
+        // Try to estimate new values based on the last API fetch
+        // This is a rough estimate, not a precise count
+        $api_fetcher = PFA_API_Fetcher::get_instance();
+        $products = $api_fetcher->get_cached_products();
+        
+        if ($products) {
+            // Apply new discount filter
+            $post_creator = PFA_Post_Creator::get_instance();
+            $eligible_products = array_filter($products, function($product) use ($new_min_discount, $post_creator) {
+                if (!isset($product['availability']) || $product['availability'] !== 'in_stock') {
+                    return false;
+                }
+                $discount = $post_creator->calculate_discount($product['price'], $product['sale_price']);
+                return $discount >= $new_min_discount;
+            });
+            
+            update_option('pfa_last_eligible_products', count($eligible_products));
+            update_option('pfa_last_total_products', count($products));
+            update_option('pfa_last_api_check_time', current_time('mysql'));
+        }
+    }
 
     // Clear all existing schedules
     wp_clear_scheduled_hook('pfa_api_check');
@@ -185,6 +215,11 @@ add_action('wp_ajax_setup_schedules', 'pfa_reset_schedules');
  *
  * @since    1.0.0
  */
+/**
+ * Check discount results without timeouts.
+ *
+ * @since    1.0.0
+ */
 function pfa_check_discount_results() {
     check_ajax_referer('pfa_ajax_nonce', 'nonce');
     
@@ -195,8 +230,10 @@ function pfa_check_discount_results() {
     
     try {
         $min_discount = isset($_POST['min_discount']) ? (int) sanitize_text_field($_POST['min_discount']) : 0;
-        update_option('min_discount', $min_discount);
-
+        
+        // Don't save min_discount value here - just check the results
+        // This modification ensures we're just checking, not saving
+        
         $post_creator = PFA_Post_Creator::get_instance();
         $api_fetcher = PFA_API_Fetcher::get_instance();
         
@@ -232,6 +269,10 @@ function pfa_check_discount_results() {
         // Get existing identifiers
         $existing_identifiers = get_option('pfa_product_identifiers', array());
         
+        // Sample products to show
+        $sample_products = [];
+        $sample_count = 0;
+        
         // Process in batches to avoid timeouts
         $batches = array_chunk($discounted_products, $check_batch_size);
         
@@ -250,6 +291,18 @@ function pfa_check_discount_results() {
                     $inDb = $post_creator->check_if_already_in_db($product['trackingLink']);
                     if (!$inDb) {
                         $eligible_count++;
+                        
+                        // Collect a few sample products to display
+                        if ($sample_count < 5) {
+                            $discount = $post_creator->calculate_discount($product['price'], $product['sale_price']);
+                            $sample_products[] = [
+                                'title' => $product['title'],
+                                'original_price' => $product['price'],
+                                'sale_price' => $product['sale_price'],
+                                'discount' => $discount . '%'
+                            ];
+                            $sample_count++;
+                        }
                     }
                 }
             }
@@ -283,17 +336,9 @@ function pfa_check_discount_results() {
                 : 'Not scheduled',
             'processed_percentage' => ($total_products > 0) ? round(($processed_count / $total_products) * 100) : 100,
             'processed_count' => $processed_count,
-            'products_checked' => $products_checked
+            'products_checked' => $products_checked,
+            'sample_products' => $sample_products
         );
-
-        update_option('pfa_last_total_products', $results['total_products']);
-        update_option('pfa_last_eligible_products', $results['total_hits']);
-        update_option('pfa_last_check_time', $results['last_check_time']);
-
-        $api_fetcher->clear_cache();
-        
-        $queue_manager = PFA_Queue_Manager::get_instance();
-        $queue_manager->clear_status_cache();
         
         wp_send_json_success($results);
 
@@ -303,6 +348,7 @@ function pfa_check_discount_results() {
         ));
     }
 }
+add_action('wp_ajax_pfa_check_discount_results', 'pfa_check_discount_results');
 
 /**
  * Refresh queue status.

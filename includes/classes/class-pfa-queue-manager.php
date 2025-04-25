@@ -435,17 +435,20 @@ class PFA_Queue_Manager {
      * @return   array                        Queue status data.
      */
     public function get_status($force_refresh = false) {
-        if (!$force_refresh) {
-            $cached_status = get_transient($this->cache_key);
-            if (false !== $cached_status) {
-                return $cached_status;
-            }
+        
+        $cached_status = get_transient($this->cache_key);
+        
+        if (!$force_refresh && false !== $cached_status && !empty($cached_status)) {
+            return $cached_status;
         }
         
         $status = $this->generate_status();
+        
         set_transient($this->cache_key, $status, $this->cache_expiry);
+        
         return $status;
     }
+    
     
     /**
      * Generate current status data.
@@ -524,10 +527,10 @@ class PFA_Queue_Manager {
                     'No posts archived recently'
             )
         );
-
+    
         $next_dripfeed = wp_next_scheduled('pfa_dripfeed_publisher');
         $next_daily = wp_next_scheduled('pfa_daily_check');
-
+    
         if ($next_dripfeed || $next_daily) {
             $status['schedules'] = array(
                 'daily_check' => $next_daily,
@@ -539,9 +542,37 @@ class PFA_Queue_Manager {
                 )
             );
         }
-
+    
+        // Ensure we have valid next check time based on interval
+        $last_check_timestamp = strtotime($last_check_time);
+        if ($last_check_timestamp && $check_interval) {
+            $expected_next_check = null;
+            
+            switch($check_interval) {
+                case 'hourly':
+                    $expected_next_check = $last_check_timestamp + HOUR_IN_SECONDS;
+                    break;
+                case 'twicedaily':
+                    $expected_next_check = $last_check_timestamp + 12 * HOUR_IN_SECONDS;
+                    break;
+                case 'daily':
+                    $expected_next_check = strtotime('tomorrow 06:00:00', $last_check_timestamp);
+                    break;
+            }
+            
+            if ($expected_next_check) {
+                $wp_next_api = wp_next_scheduled('pfa_api_check');
+                if (!$wp_next_api || $wp_next_api !== $expected_next_check) {
+                    wp_clear_scheduled_hook('pfa_api_check');
+                    wp_schedule_single_event($expected_next_check, 'pfa_api_check');
+                    $status['api_check']['next_check'] = wp_date('Y-m-d H:i:s T', $expected_next_check);
+                    update_option('pfa_next_api_check', $status['api_check']['next_check']);
+                }
+            }
+        }
+    
         $this->log_message('Generated status: ' . print_r($status, true));
-
+    
         return $status;
     }
     

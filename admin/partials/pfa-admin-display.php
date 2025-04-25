@@ -31,7 +31,7 @@ $automation_enabled = get_option('pfa_automation_enabled', 'yes');
 
 // Get queue status data
 $queue_manager = PFA_Queue_Manager::get_instance();
-$status_data = $queue_manager->get_status(false);
+$status_data = $queue_manager->get_status(true);
 ?>
 
 <div class="wrap pfa-admin-wrap">

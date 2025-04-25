@@ -290,14 +290,15 @@ class PFA_API_Fetcher {
      * @access   private
      * @return   array|false    Cached products or false if not found.
      */
-    private function get_cached_products() {
+    public function get_cached_products() {
         $products = get_transient($this->cache_key);
         if ($products !== false) {
-            $this->log_message('Found cached products');
+            $this->log_message('Returning ' . count($products) . ' cached products');
             return $products;
         }
         return false;
     }
+
 
     /**
      * Store products in cache.

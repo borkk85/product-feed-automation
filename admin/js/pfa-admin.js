@@ -43,7 +43,7 @@
                 url: pfaData.ajaxurl,
                 type: "POST",
                 data: {
-                    action: "pfa_check_dripfeed",
+                    action: "pfa_refresh_status",
                     nonce: pfaData.nonce
                 },
                 success: function(response) {
@@ -319,18 +319,18 @@
          */
         $("#check_discount_results").on("click", function(e) {
             e.preventDefault();
-
+        
             const $button = $(this);
             const minDiscount = $("#min_discount").val() || 0;
-
+        
             $(".pfa-discount-check-message").remove();
-
+        
             $button
                 .prop("disabled", true)
                 .html(
                     '<span class="dashicons dashicons-update pfa-spinning"></span> Checking...'
                 );
-
+        
             $.ajax({
                 url: pfaData.ajaxurl,
                 type: "POST",
@@ -340,6 +340,7 @@
                     nonce: pfaData.nonce
                 },
                 success: function(response) {
+                    console.log("Discount check response:", response);
                     const $message = $("<div>")
                         .addClass("pfa-discount-check-message notice")
                         .css({
@@ -347,7 +348,7 @@
                             padding: "10px 15px",
                             "border-left-width": "4px"
                         });
-
+        
                     if (response.success) {
                         let messageContent = `
                             <p>
@@ -357,7 +358,7 @@
                                 • Next scheduled check: ${response.data.next_scheduled_check}
                             </p>
                         `;
-
+        
                         if (response.data.sample_products?.length > 0) {
                             messageContent += `
                                 <p><strong>Top Discounted Products:</strong></p>
@@ -379,18 +380,12 @@
                                 </ul>
                             `;
                         }
-
-                        $message.addClass("notice-success").html(messageContent).show()
-                            .delay(3000)
-                            .fadeOut();
-
-                        // Update the last check results display
-                        $(".pfa-last-check-results").html(`
-                            Found ${response.data.total_hits} products with 
-                            ${response.data.min_discount}%+ discount
-                            (of ${response.data.total_products} total)<br>
-                            <small>Checked at: ${response.data.last_check_time}</small>
-                        `);
+        
+                        $message.addClass("notice-success").html(messageContent).show();
+        
+                        // Note we don't update the last check results display
+                        // to avoid implying the settings have been saved
+                        
                     } else {
                         $message
                             .addClass("notice-error")
@@ -400,18 +395,11 @@
                                 }</p>`
                             );
                     }
-
+        
                     $message.insertAfter($button.closest("tr")).show();
-
-                    $(".pfa-last-check-results")
-                        .css("background-color", "#ffd")
-                        .delay(1000)
-                        .queue(function(next) {
-                            $(this).css("background-color", "");
-                            next();
-                        });
                 },
                 error: function(xhr, status, error) {
+                    console.error("Discount check error:", xhr, status, error);
                     const $message = $("<div>")
                         .addClass("pfa-discount-check-message notice notice-error")
                         .css({
@@ -549,3 +537,11 @@
         refreshQueueStatus();
     });
 })(jQuery);
+
+
+$(window).on("load", function() {
+    // Short delay to ensure DOM is fully loaded
+    setTimeout(function() {
+        refreshQueueStatus();
+    }, 500);
+});
