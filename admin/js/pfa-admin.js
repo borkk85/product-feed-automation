@@ -11,6 +11,8 @@
     $(document).ready(function() {
         let countdownInterval;
         let currentStatus = {};
+        let isRefreshing = false;
+        let refreshTimer = null;
 
         // Initialize countdowns and periodic refresh
         initializeCountdowns();
@@ -26,16 +28,37 @@
             countdownInterval = setInterval(updateCountdowns, 1000);
             
             // Auto-refresh status every 5 minutes
-            setInterval(refreshQueueStatus, 300000);
+            setInterval(function() {
+                debouncedRefresh();
+            }, 300000);
             
-            // Initial status refresh
-            refreshQueueStatus();
+            // Initial status refresh with small delay
+            setTimeout(function() {
+                debouncedRefresh();
+            }, 500);
         }
 
+        /**
+         * Debounced refresh to prevent multiple simultaneous calls
+         */
+        function debouncedRefresh() {
+            if (refreshTimer) {
+                clearTimeout(refreshTimer);
+            }
+            
+            refreshTimer = setTimeout(function() {
+                if (!isRefreshing) {
+                    refreshQueueStatus();
+                }
+            }, 300);
+        }
         /**
          * Refresh queue status via AJAX
          */
         function refreshQueueStatus() {
+            if (isRefreshing) return;
+            
+            isRefreshing = true;
             console.log("Refreshing queue status...");
             $("#refresh-queue-status").prop("disabled", true).text("Refreshing...");
             
@@ -59,6 +82,7 @@
                 },
                 complete: function() {
                     $("#refresh-queue-status").prop("disabled", false).text("Refresh Status");
+                    isRefreshing = false;
                 }
             });
         }
@@ -102,7 +126,7 @@
 
                     if (duration.asSeconds() <= 0) {
                         $timer.text("Checking...");
-                        refreshQueueStatus();
+                        debouncedRefresh();
                     } else {
                         $timer.text(
                             Math.floor(duration.asHours()) +
@@ -237,26 +261,65 @@
          * Refresh status button handler
          */
         $("#refresh-queue-status").on("click", function() {
-            const $button = $(this);
-            $button.prop("disabled", true).text("Refreshing...");
+            debouncedRefresh();
+        });
+
+        /**
+         * Save settings enhancement: refresh status after saving
+         */
+        $("#pfa-settings-form").on("submit", function(e) {
+            e.preventDefault();
+            const formData = $(this).serialize();
 
             $.ajax({
                 url: pfaData.ajaxurl,
                 type: "POST",
-                data: {
-                    action: "pfa_refresh_status",
-                    nonce: pfaData.nonce
-                },
+                data: `${formData}&action=save_ai_workflow_settings&nonce=${pfaData.nonce}`,
                 success: function(response) {
-                    if (response.success && response.data) {
-                        updateStatusDisplay(response.data);
+                    const $message = $("#pfa-settings-message");
+
+                    if (response.success) {
+                        $message
+                            .removeClass("notice-error")
+                            .addClass("notice notice-success")
+                            .html("<p>Settings saved successfully.</p>")
+                            .show()
+                            .delay(3000)
+                            .fadeOut();
+
+                        // Update status display with new data
+                        if (response.data.status) {
+                            updateStatusDisplay(response.data.status);
+
+                            // Update the check interval text immediately
+                            const intervalText = response.data.check_interval || "daily";
+                            $(".pfa-next-api-check")
+                                .closest(".pfa-api-status")
+                                .find(".pfa-check-interval-text")
+                                .text(`(${intervalText} checks)`);
+                        }
+
+                        // Force an immediate status refresh
+                        setTimeout(function() {
+                            debouncedRefresh();
+                        }, 1000);
+                    } else {
+                        $message
+                            .removeClass("notice-success")
+                            .addClass("notice notice-error")
+                            .html(
+                                `<p>Error saving settings: ${
+                                    response.data?.message || "Unknown error"
+                                }</p>`
+                            )
+                            .show();
                     }
-                },
-                complete: function() {
-                    $button.prop("disabled", false).text("Refresh Status");
                 }
             });
         });
+
+        // Remove duplicate refresh calls
+        $(window).off("load");
 
         /**
          * Setup schedules button handler

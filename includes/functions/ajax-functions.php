@@ -46,7 +46,11 @@ function pfa_save_settings() {
 
     // Get the old discount value for comparison
     $old_min_discount = get_option('min_discount', 0);
+    $old_max_posts = get_option('max_posts_per_day', 10);
     $new_min_discount = (int)sanitize_text_field($_POST['min_discount']);
+    $new_max_posts = (int)sanitize_text_field($_POST['max_posts_per_day']);
+    
+    error_log('Save settings - old discount: ' . $old_min_discount . ', new: ' . $new_min_discount);
 
     // Save API credentials
     update_option('addrevenue_api_key', sanitize_text_field($_POST['addrevenue_api_key']));
@@ -61,7 +65,7 @@ function pfa_save_settings() {
     
     // Save automation settings
     update_option('min_discount', $new_min_discount);
-    update_option('max_posts_per_day', sanitize_text_field($_POST['max_posts_per_day']));
+    update_option('max_posts_per_day', $new_max_posts);
     update_option('check_interval', sanitize_text_field($_POST['check_interval']));
     update_option('dripfeed_interval', sanitize_text_field($_POST['dripfeed_interval']));
 
@@ -70,24 +74,35 @@ function pfa_save_settings() {
         error_log('Discount value changed from ' . $old_min_discount . ' to ' . $new_min_discount . '. Updating last check display.');
         
         // Try to estimate new values based on the last API fetch
-        // This is a rough estimate, not a precise count
         $api_fetcher = PFA_API_Fetcher::get_instance();
-        $products = $api_fetcher->get_cached_products();
+        $products = $api_fetcher->fetch_products(true);
         
         if ($products) {
             // Apply new discount filter
             $post_creator = PFA_Post_Creator::get_instance();
-            $eligible_products = array_filter($products, function($product) use ($new_min_discount, $post_creator) {
-                if (!isset($product['availability']) || $product['availability'] !== 'in_stock') {
-                    return false;
-                }
+            
+            // Get all in-stock products
+            $in_stock_products = array_filter($products, function($product) {
+                return isset($product['availability']) && $product['availability'] === 'in_stock';
+            });
+            
+            // Filter by discount
+            $eligible_products = array_filter($in_stock_products, function($product) use ($new_min_discount, $post_creator) {
                 $discount = $post_creator->calculate_discount($product['price'], $product['sale_price']);
                 return $discount >= $new_min_discount;
             });
             
+            // Update options that drive the "Last Check Results" display
             update_option('pfa_last_eligible_products', count($eligible_products));
             update_option('pfa_last_total_products', count($products));
             update_option('pfa_last_api_check_time', current_time('mysql'));
+            
+            error_log(sprintf(
+                'Updated last check data - Eligible: %d, Total: %d, Discount: %d%%',
+                count($eligible_products),
+                count($products),
+                $new_min_discount
+            ));
         }
     }
 
@@ -103,6 +118,12 @@ function pfa_save_settings() {
     // Force Queue Manager to refresh its status
     $queue_manager = PFA_Queue_Manager::get_instance();
     $queue_manager->clear_status_cache();  
+    
+    // Trigger queue check if settings have changed in a way that affects eligibility
+    if ($old_min_discount != $new_min_discount || $old_max_posts != $new_max_posts) {
+        error_log('Key settings changed - triggering immediate queue check');
+        $scheduler->check_and_queue_products();
+    }
     
     // Get fresh status that will include new interval settings
     $status = $queue_manager->get_status(true);

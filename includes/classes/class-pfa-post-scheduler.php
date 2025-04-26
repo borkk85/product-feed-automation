@@ -689,108 +689,153 @@ class PFA_Post_Scheduler {
      * @since    1.0.0
      */
     public function check_and_queue_products() {
-        $this->log_message('=== Starting check_and_queue_products ===');
-
+        $this->log_message('=== Starting check_and_queue_products with DETAILED LOGGING ===');
+    
         if (get_option('pfa_automation_enabled') !== 'yes') {
             $this->log_message('Automation is disabled. Skipping queue check.');
             return;
         }
-
+    
         try {
+            // Fetch and analyze products
+            $this->log_message('Fetching products from API...');
             $products = $this->api_fetcher->fetch_products();
+            
+            if (!$products || empty($products)) {
+                $this->log_message('ERROR: No products returned from API. Aborting queue check.');
+                return;
+            }
+            
+            $this->log_message('API returned ' . count($products) . ' total products');
+            
+            // Calculate available slots
             $slots_available = $this->max_posts_per_day - $this->get_post_count_today();
             $this->log_message('Available slots: ' . $slots_available);
             
+            if ($slots_available <= 0) {
+                $this->log_message('No slots available for today. Daily limit reached or exceeded.');
+                return;
+            }
+            
+            // Initialize product identifiers if needed
             if (get_option('pfa_product_identifiers') === false) {
                 add_option('pfa_product_identifiers', array());
+                $this->log_message('Initialized product identifiers option (was missing)');
             }
-
+    
             $existing_identifiers = get_option('pfa_product_identifiers', array());
+            $this->log_message('Loaded ' . count($existing_identifiers) . ' existing product identifiers');
+            
             $skipped = array('duplicate' => 0, 'exists' => 0, 'stock' => 0);
             $queued = 0;
             
             // Group products by advertiser first
             $advertiser_groups = array();
             foreach ($products as $product) {
+                if (!isset($product['advertiserId'])) {
+                    $this->log_message('WARNING: Product missing advertiserId: ' . print_r($product, true));
+                    continue;
+                }
+                
                 $advertiser_id = $product['advertiserId'];
                 if (!isset($advertiser_groups[$advertiser_id])) {
                     $advertiser_groups[$advertiser_id] = array();
                 }
                 $advertiser_groups[$advertiser_id][] = $product;
             }
-
+    
             $this->log_message(sprintf("Found %d different advertisers", count($advertiser_groups)));
-
+    
             // Get list of advertiser IDs and shuffle them for random order
             $advertiser_ids = array_keys($advertiser_groups);
             shuffle($advertiser_ids);
-
+    
             // Keep track of how many products we've taken from each advertiser
             $advertiser_counts = array_fill_keys($advertiser_ids, 0);
             $max_rounds = 10; // Prevent infinite loops
             $round = 0;
             $remaining_slots = $slots_available;
-
+    
             $this->log_message(sprintf("Starting distribution for %d advertisers with %d slots", 
                                 count($advertiser_ids), $slots_available));
-
+    
             while ($remaining_slots > 0 && $round < $max_rounds) {
                 $added_this_round = false;
                 
                 foreach ($advertiser_ids as $advertiser_id) {
                     if ($remaining_slots <= 0) break;
-
-                    $products = $advertiser_groups[$advertiser_id];
-                    if (empty($products)) continue;
-
+    
+                    $advertiser_products = $advertiser_groups[$advertiser_id];
+                    if (empty($advertiser_products)) {
+                        $this->log_message("No products left for advertiser $advertiser_id, skipping");
+                        continue;
+                    }
+    
                     // Get in-stock variants for this advertiser
-                    $in_stock_variants = array_filter($products, function($p) {
+                    $in_stock_variants = array_filter($advertiser_products, function($p) {
+                        if (!isset($p['availability'])) {
+                            $this->log_message('WARNING: Product missing availability: ' . $p['id']);
+                            return false;
+                        }
                         return $p['availability'] === 'in_stock';
                     });
-
+    
                     if (empty($in_stock_variants)) {
-                        $skipped['stock'] += count($products);
+                        $skipped['stock'] += count($advertiser_products);
+                        $this->log_message("No in-stock products for advertiser $advertiser_id");
                         unset($advertiser_groups[$advertiser_id]); // Remove empty advertiser
                         continue;
                     }
                     
-                    usort($in_stock_variants, function($a, $b) {
-                        $discount_a = $this->post_creator->calculate_discount($a['price'], $a['sale_price']);
-                        $discount_b = $this->post_creator->calculate_discount($b['price'], $b['sale_price']);
+                    // Sort by discount (highest first)
+                    $post_creator = PFA_Post_Creator::get_instance();
+                    usort($in_stock_variants, function($a, $b) use ($post_creator) {
+                        if (!isset($a['price']) || !isset($a['sale_price']) || 
+                            !isset($b['price']) || !isset($b['sale_price'])) {
+                            return 0;
+                        }
                         
-                        $this->log_message(sprintf(
-                            'Comparing products - ID: %s (Discount: %d%%) vs ID: %s (Discount: %d%%)',
-                            $a['id'],
-                            $discount_a,
-                            $b['id'],
-                            $discount_b
-                        ));
+                        $discount_a = $post_creator->calculate_discount($a['price'], $a['sale_price']);
+                        $discount_b = $post_creator->calculate_discount($b['price'], $b['sale_price']);
                         
                         return $discount_b - $discount_a;
                     });
-
+    
                     // Try to find a valid product from this advertiser
                     foreach ($in_stock_variants as $key => $variant) {
                         if ($remaining_slots <= 0) break;
+                        
+                        if (!isset($variant['id'])) {
+                            $this->log_message('WARNING: Product missing ID, skipping');
+                            continue;
+                        }
                         
                         $variant_identifier = md5(
                             $variant['id'] . '|' . 
                             (isset($variant['gtin']) ? $variant['gtin'] : '') . '|' . 
                             (isset($variant['mpn']) ? $variant['mpn'] : '')
                         );
-
+    
                         if (in_array($variant_identifier, $existing_identifiers)) {
                             $skipped['duplicate']++;
                             continue;
                         }
-
-                        if ($this->post_creator->check_if_already_in_db($variant['trackingLink'])) {
+    
+                        if (!isset($variant['trackingLink'])) {
+                            $this->log_message('WARNING: Product ID ' . $variant['id'] . ' missing trackingLink, skipping');
+                            continue;
+                        }
+                        
+                        if ($post_creator->check_if_already_in_db($variant['trackingLink'])) {
                             $skipped['exists']++;
                             continue;
                         }
-
-                        // Found a valid variant to use
-                        if ($this->queue_manager->add_to_queue($variant)) {
+    
+                        // Found a valid variant to use - add to queue
+                        $queue_manager = PFA_Queue_Manager::get_instance();
+                        $added = $queue_manager->add_to_queue($variant);
+                        
+                        if ($added) {
                             $this->log_message(sprintf(
                                 "Added product from advertiser %s (ID: %s) to queue. Remaining slots: %d",
                                 $advertiser_id,
@@ -798,6 +843,7 @@ class PFA_Post_Scheduler {
                                 $remaining_slots - 1
                             ));
                             
+                            // Add to existing identifiers to prevent duplicates
                             $existing_identifiers[] = $variant_identifier;
                             update_option('pfa_product_identifiers', $existing_identifiers);
                             
@@ -806,45 +852,59 @@ class PFA_Post_Scheduler {
                             $advertiser_counts[$advertiser_id]++;
                             $added_this_round = true;
                             
-                            // Remove the used product
+                            // Remove the used product from the array
                             unset($advertiser_groups[$advertiser_id][$key]);
+                            $advertiser_groups[$advertiser_id] = array_values($advertiser_groups[$advertiser_id]);
                             
                             break; // Try next advertiser
+                       } else {
+                                $this->log_message("WARNING: Failed to add product ID " . $variant['id'] . " to queue");
+                            }
                         }
                     }
+        
+                    $round++;
+                    $this->log_message(sprintf("Completed round %d with %d products queued", $round, $queued));
+        
+                    // Only break if we haven't added anything AND we've done at least 2 rounds
+                    if (!$added_this_round && $round >= 2) {
+                        $this->log_message(sprintf("No products added in round %d - breaking distribution loop", $round));
+                        break;
+                    }
                 }
-
-                $round++;
-                $this->log_message(sprintf("Completed round %d with %d products queued", $round, $queued));
-
-                // Only break if we haven't added anything AND we've done at least 2 rounds
-                if (!$added_this_round && $round >= 2) {
-                    $this->log_message(sprintf("No products added in round %d - breaking distribution loop", $round));
-                    break;
+        
+                // Log distribution of queued posts
+                foreach ($advertiser_counts as $advertiser_id => $count) {
+                    if ($count > 0) {
+                        $this->log_message(sprintf("Advertiser %s: %d products queued", $advertiser_id, $count));
+                    }
                 }
+        
+                $this->log_message(sprintf(
+                    'Queue summary: %d queued (of %d slots), %d duplicates, %d existing, %d out of stock, %d active advertisers',
+                    $queued,
+                    $slots_available,
+                    $skipped['duplicate'],
+                    $skipped['exists'],
+                    $skipped['stock'],
+                    count(array_filter($advertiser_counts))
+                ));
+                
+                // Force refresh of queue status after we add items
+                $queue_manager = PFA_Queue_Manager::get_instance();
+                $queue_manager->clear_status_cache();
+                
+                // If we successfully queued items, make sure the dripfeed is scheduled
+                if ($queued > 0) {
+                    $this->log_message("Successfully queued $queued products - ensuring dripfeed is scheduled");
+                    $this->schedule_next_dripfeed();
+                }
+        
+            } catch (Exception $e) {
+                $this->log_message('ERROR in check_and_queue_products: ' . $e->getMessage());
+                $this->log_message('Stack trace: ' . $e->getTraceAsString());
             }
-
-            // Log distribution of queued posts
-            foreach ($advertiser_counts as $advertiser_id => $count) {
-                if ($count > 0) {
-                    $this->log_message(sprintf("Advertiser %s: %d products queued", $advertiser_id, $count));
-                }
-            }
-
-            $this->log_message(sprintf(
-                'Queue summary: %d queued (of %d slots), %d duplicates, %d existing, %d out of stock, %d active advertisers',
-                $queued,
-                $slots_available,
-                $skipped['duplicate'],
-                $skipped['exists'],
-                $skipped['stock'],
-                count(array_filter($advertiser_counts))
-            ));
-
-        } catch (Exception $e) {
-            $this->log_message('Error in check_and_queue_products: ' . $e->getMessage());
         }
-    }
 
     /**
      * Schedule the next dripfeed event.

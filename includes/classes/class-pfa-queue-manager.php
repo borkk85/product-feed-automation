@@ -119,6 +119,8 @@ class PFA_Queue_Manager {
     public function clear_status_cache() {
         delete_transient($this->cache_key);
         delete_transient($this->lock_key);
+        wp_cache_flush(); // Flush WordPress object cache
+        $this->log_message('Cache cleared completely');
     }
     
     /**
@@ -435,18 +437,23 @@ class PFA_Queue_Manager {
      * @return   array                        Queue status data.
      */
     public function get_status($force_refresh = false) {
-        
+        // Always force refresh on page load to ensure fresh data
         $cached_status = get_transient($this->cache_key);
         
-        if (!$force_refresh && false !== $cached_status && !empty($cached_status)) {
-            return $cached_status;
+        if (false === $cached_status || empty($cached_status) || $force_refresh) {
+            $this->log_message('Generating fresh status data (cache miss or forced refresh)');
+            
+            // Always generate fresh data in these cases
+            $status = $this->generate_status();
+            
+            // Cache the status for future use
+            set_transient($this->cache_key, $status, $this->cache_expiry);
+            
+            return $status;
         }
         
-        $status = $this->generate_status();
-        
-        set_transient($this->cache_key, $status, $this->cache_expiry);
-        
-        return $status;
+        $this->log_message('Using cached status data');
+        return $cached_status;
     }
     
     
@@ -458,6 +465,9 @@ class PFA_Queue_Manager {
      * @return   array    Status data.
      */
     private function generate_status() {
+        // Directly get the latest values from options to ensure freshness
+        $this->log_message('Generating fresh status with direct option retrieval');
+        
         $wp_timezone = new DateTimeZone(wp_timezone_string());
         $current_time = new DateTime('now', $wp_timezone);
         $current_hour = (int)$current_time->format('G');
@@ -501,6 +511,13 @@ class PFA_Queue_Manager {
             $recently_archived = count($recent_archives);
         }
         
+        // Always get the latest option values directly
+        $min_discount_value = get_option('min_discount', 0);
+        $eligible_products_count = get_option('pfa_last_eligible_products', 0);
+        $total_products_count = get_option('pfa_last_total_products', 0);
+        
+        $this->log_message("Current options values - min_discount: $min_discount_value, eligible: $eligible_products_count, total: $total_products_count");
+        
         $status = array(
             'current_time' => $current_time->format('Y-m-d H:i:s T'),
             'automation_enabled' => $automation_enabled,
@@ -515,9 +532,9 @@ class PFA_Queue_Manager {
                 'next_check' => $next_api_check,
                 'last_check_time' => $last_check_time,
                 'check_interval' => $check_interval,
-                'total_products' => get_option('pfa_last_total_products', 0),
-                'eligible_products' => get_option('pfa_last_eligible_products', 0),
-                'min_discount' => get_option('min_discount', 0)
+                'total_products' => $total_products_count,
+                'eligible_products' => $eligible_products_count,
+                'min_discount' => $min_discount_value
             ),
             'archived_stats' => array(
                 'total' => $archived_posts,
@@ -575,7 +592,7 @@ class PFA_Queue_Manager {
     
         return $status;
     }
-    
+
     /**
      * Handle post deletion.
      *
@@ -612,15 +629,25 @@ class PFA_Queue_Manager {
     public function refresh_status() {
         check_ajax_referer('pfa_ajax_nonce', 'nonce');
         
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Insufficient permissions'));
+            return;
+        }
+        
         // Clear all caches
         $this->clear_status_cache();
         delete_transient($this->queue_key);
         
-        // Get fresh status
+        // Flush WordPress object cache to ensure fresh data
+        wp_cache_flush();
+        
+        // Get fresh status with direct option access
         $status = $this->generate_status();
         
         // Force immediate status update
         set_transient($this->cache_key, $status, $this->cache_expiry);
+        
+        $this->log_message('Fresh status generated via AJAX: ' . print_r($status, true));
         
         wp_send_json_success($status);
     }
