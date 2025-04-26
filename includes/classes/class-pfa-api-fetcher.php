@@ -261,24 +261,46 @@ class PFA_API_Fetcher {
      * @return   boolean    True if API call is allowed, false otherwise.
      */
     private function should_fetch_products() {
-        // Check if this is a scheduled API check
-        if (current_filter() === 'pfa_api_check') {
-            $this->log_message('API fetch allowed - Scheduled check');
+        // Get current filter/action context
+        $current_filter = current_filter();
+        $this->log_message('Current context: ' . $current_filter);
+        
+        // Allow in specific actions
+        $allowed_actions = array(
+            'pfa_api_check',
+            'pfa_dripfeed_publisher',
+            'pfa_daily_check',
+            'wp_ajax_pfa_check_discount_results',
+            'wp_ajax_setup_schedules'
+        );
+        
+        // Allow in cron context
+        if (defined('DOING_CRON') && DOING_CRON) {
+            $this->log_message('API fetch allowed - Running in WP Cron');
             return true;
         }
-
-        // Check if this is dripfeed publishing
-        if (current_filter() === 'pfa_dripfeed_publisher') {
-            $this->log_message('API fetch allowed - Dripfeed publishing');
+        
+        // Allow in specific contexts
+        if (in_array($current_filter, $allowed_actions)) {
+            $this->log_message('API fetch allowed - Running in allowed context: ' . $current_filter);
             return true;
         }
-
-        // Check if this is a manual discount check
-        if (current_filter() === 'wp_ajax_pfa_check_discount_results') {
-            $this->log_message('API fetch allowed - Manual discount check');
+        
+        // Check if triggered from check_and_queue_products
+        $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+        foreach ($backtrace as $frame) {
+            if (isset($frame['function']) && $frame['function'] === 'check_and_queue_products') {
+                $this->log_message('API fetch allowed - Called from check_and_queue_products');
+                return true;
+            }
+        }
+        
+        // Force allow with query parameter (admin only)
+        if (is_admin() && isset($_GET['force_api_fetch']) && current_user_can('manage_options')) {
+            $this->log_message('API fetch allowed - Forced by admin');
             return true;
         }
-
+        
         $this->log_message('API fetch not allowed - Unauthorized context');
         return false;
     }

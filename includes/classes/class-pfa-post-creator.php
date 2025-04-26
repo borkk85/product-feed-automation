@@ -79,124 +79,202 @@ class PFA_Post_Creator {
      */
     public function create_product_post($product_data, $advertiser_data, $schedule_data = null) {
         $this->log_message('Starting product post creation for product: ' . print_r($product_data['id'], true));
-
-        // Basic availability check remains as a safeguard
-        if ($product_data['availability'] !== 'in_stock') {
+    
+        // Basic availability check
+        if (isset($product_data['availability']) && $product_data['availability'] !== 'in_stock') {
             $this->log_message('Product not in stock, skipping');
             return false;
         }
-    
+        
+        // Check for duplicate
         $existing_post_id = $this->check_if_already_in_db($product_data['trackingLink']);
         if ($existing_post_id) {
             $this->log_message('Product already exists as post ID: ' . $existing_post_id);
             return array('status' => 'exists', 'post_id' => $existing_post_id);
         }
         
-        $product_id = $product_data['id'];
-        $encoded_id = $this->encrypt_unique($product_id);
-        $dynamic_url = site_url() . '/?pfa=' . urlencode($encoded_id);
-        $dynamic_esc_url = esc_url($dynamic_url);
-
-        $title = stripslashes($product_data['title']);
-        $title = trim($title, '"');
-        $this->log_message('Title after cleanup: ' . $title);
-
-        $translated_title = $this->translate_text($title);
-        if ($translated_title) {
-            $this->log_message('Original product title: ' . $title);
-            $this->log_message('Translated product title: ' . $translated_title);
-            $product_data['title'] = $translated_title;
-        } else {
-            $this->log_message('Product title translation failed, using original: ' . $title);
-            $product_data['title'] = $title;
-        }
-
-        $this->log_message('Generating content for product');
-        $ai_response = $this->generate_content_from_ai(
-            $product_data['title'],
-            isset($product_data['description']) ? $product_data['description'] : null,
-            true
-        );
-
-        $price_block = $this->generate_price_block($product_data, $dynamic_esc_url);
-        $amazon_link_block = $this->amazon_block($product_data, $dynamic_esc_url, $advertiser_data, null);
-        $date_block = $this->date_block();
-        $commission_text = '<p>**Adealsweden makes commission on any purchases through the links.</p>';
-
-        $post_content = $ai_response['content'] . "\n\n" .
-            $amazon_link_block . "\n\n" .
-            $date_block . "\n\n" .
-            $commission_text;
-
-        $this->log_message('Constructed post content length: ' . strlen($post_content));
-
-        $post_data = array(
-            'post_title'    => wp_strip_all_tags($ai_response['title']),
-            'post_content'  => $post_content,
-            'post_excerpt'  => $price_block,
-            'post_status'   => $schedule_data['post_status'],
-            'post_date'     => $schedule_data['post_date'], 
-            'post_author'   => 1,
-            'post_type'     => 'post'
-        );
-
-        if ($schedule_data) {
-            $post_data = array_merge($post_data, $schedule_data);
-            $this->log_message("Scheduling post for: " . $schedule_data['post_date']);
-        } else {
-            $post_data['post_status'] = 'publish';
-        }
-
-        $this->log_message('Inserting post with data: ' . print_r($post_data, true));
-
-        $post_id = wp_insert_post($post_data, true);
-
-        if (is_wp_error($post_id)) {
-            $this->log_message('Failed to create post: ' . $post_id->get_error_message());
-            return false;
-        }
-
-        $this->log_message('Successfully created post with ID: ' . $post_id);
-
-        update_post_meta($post_id, '_Amazone_produt_baseName', $product_id);
-        update_post_meta($post_id, '_product_url', $product_data['trackingLink']);
-        update_post_meta($post_id, 'dynamic_amazone_link', $dynamic_esc_url);
-        update_post_meta($post_id, 'dynamic_link', $dynamic_esc_url);
-        update_post_meta($post_id, '_discount_price', $product_data['sale_price']);
-
-        if (!empty($product_data['image_link'])) {
-            $this->set_featured_image($post_id, $product_data['image_link']);
-        }
-
-        if (!empty($advertiser_data['displayName'])) {
-            $store_type_term = wp_set_object_terms($post_id, $advertiser_data['displayName'], 'store_type');
-            if (!is_wp_error($store_type_term) && !empty($store_type_term)) {
-                $term_id = $store_type_term[0];
-                $current_image_id = get_term_meta($term_id, 'featured_image', true);
-
-                if (empty($current_image_id)) {
-                    $logo_url = isset($advertiser_data['logoImageFilename']) ?
-                        esc_url($advertiser_data['logoImageFilename']) : '';
-
-                    if (!empty($logo_url)) {
-                        require_once(ABSPATH . 'wp-admin/includes/media.php');
-                        require_once(ABSPATH . 'wp-admin/includes/file.php');
-                        require_once(ABSPATH . 'wp-admin/includes/image.php');
-
-                        $image_id = media_sideload_image($logo_url, 0, null, 'id');
-                        if (!is_wp_error($image_id)) {
-                            update_term_meta($term_id, 'featured_image', $image_id);
-                            update_post_meta($image_id, '_brand_logo_image', '1');
+        // Clear any potential object cache to ensure data consistency
+        wp_cache_flush();
+        
+        try {
+            $product_id = $product_data['id'];
+            $encoded_id = $this->encrypt_unique($product_id);
+            $dynamic_url = site_url() . '/?pfa=' . urlencode($encoded_id);
+            $dynamic_esc_url = esc_url($dynamic_url);
+    
+            $title = stripslashes($product_data['title']);
+            $title = trim($title, '"');
+            $this->log_message('Title after cleanup: ' . $title);
+    
+            $translated_title = $this->translate_text($title);
+            if ($translated_title) {
+                $this->log_message('Original product title: ' . $title);
+                $this->log_message('Translated product title: ' . $translated_title);
+                $product_data['title'] = $translated_title;
+            } else {
+                $this->log_message('Product title translation failed, using original: ' . $title);
+                $product_data['title'] = $title;
+            }
+    
+            $this->log_message('Generating content for product');
+            $ai_response = $this->generate_content_from_ai(
+                $product_data['title'],
+                isset($product_data['description']) ? $product_data['description'] : null,
+                true
+            );
+    
+            if (!$ai_response || !is_array($ai_response) || !isset($ai_response['title']) || !isset($ai_response['content'])) {
+                $this->log_message('Error generating AI content: ' . print_r($ai_response, true));
+                $ai_response = array(
+                    'title' => $product_data['title'],
+                    'content' => 'This is a product listing for ' . $product_data['title'] . '.'
+                );
+                $this->log_message('Using fallback content');
+            }
+    
+            $price_block = $this->generate_price_block($product_data, $dynamic_esc_url);
+            $amazon_link_block = $this->amazon_block($product_data, $dynamic_esc_url, $advertiser_data, null);
+            $date_block = $this->date_block();
+            $commission_text = '<p>**Adealsweden makes commission on any purchases through the links.</p>';
+    
+            $post_content = $ai_response['content'] . "\n\n" .
+                $amazon_link_block . "\n\n" .
+                $date_block . "\n\n" .
+                $commission_text;
+    
+            $this->log_message('Constructed post content length: ' . strlen($post_content));
+    
+            $post_data = array(
+                'post_title'    => wp_strip_all_tags($ai_response['title']),
+                'post_content'  => $post_content,
+                'post_excerpt'  => $price_block,
+                'post_status'   => 'publish', // Default to publish
+                'post_author'   => 1,
+                'post_type'     => 'post'
+            );
+    
+            // Apply schedule data if provided
+            if ($schedule_data) {
+                foreach ($schedule_data as $key => $value) {
+                    $post_data[$key] = $value;
+                }
+                $this->log_message("Scheduling post for: " . $schedule_data['post_date']);
+            }
+    
+            $this->log_message('Inserting post with data: ' . print_r($post_data, true));
+    
+            // Actually insert the post
+            $post_id = wp_insert_post($post_data, true);
+    
+            if (is_wp_error($post_id)) {
+                $this->log_message('Failed to create post: ' . $post_id->get_error_message());
+                return false;
+            }
+    
+            $this->log_message('Successfully created post with ID: ' . $post_id);
+    
+            // Add post meta
+            $metas = array(
+                '_Amazone_produt_baseName' => $product_id,
+                '_product_url' => $product_data['trackingLink'],
+                'dynamic_amazone_link' => $dynamic_esc_url,
+                'dynamic_link' => $dynamic_esc_url,
+                '_discount_price' => $product_data['sale_price'],
+                self::POST_IDENTIFIER => 'true' // This is the critical meta for flagging as our post
+            );
+    
+            foreach ($metas as $key => $value) {
+                $result = update_post_meta($post_id, $key, $value);
+                if (!$result) {
+                    $this->log_message("Warning: Failed to set meta '{$key}' for post {$post_id}");
+                }
+            }
+    
+            // Set featured image if available
+            if (!empty($product_data['image_link'])) {
+                $image_result = $this->set_featured_image($post_id, $product_data['image_link']);
+                $this->log_message('Featured image result: ' . ($image_result ? 'success' : 'failed'));
+            }
+    
+            // Set store type term
+            if (!empty($advertiser_data['displayName'])) {
+                $store_type_term = wp_set_object_terms($post_id, $advertiser_data['displayName'], 'store_type');
+                
+                if (!is_wp_error($store_type_term) && !empty($store_type_term)) {
+                    $term_id = $store_type_term[0];
+                    
+                    // Set logo image if available
+                    if (!empty($advertiser_data['logoImageFilename'])) {
+                        $logo_url = esc_url($advertiser_data['logoImageFilename']);
+                        
+                        if (!empty($logo_url)) {
+                            // Load required media handling functions
+                            require_once(ABSPATH . 'wp-admin/includes/media.php');
+                            require_once(ABSPATH . 'wp-admin/includes/file.php');
+                            require_once(ABSPATH . 'wp-admin/includes/image.php');
+    
+                            $image_id = media_sideload_image($logo_url, 0, null, 'id');
+                            if (!is_wp_error($image_id)) {
+                                update_term_meta($term_id, 'featured_image', $image_id);
+                                update_post_meta($image_id, '_brand_logo_image', '1');
+                            }
                         }
                     }
                 }
             }
+    
+            // Set discount tag
+            $this->set_discount_tag($post_id, $product_data['price'], $product_data['sale_price']);
+            
+            // Set active-deals category for post
+            $active_cat = get_term_by('slug', 'deals', 'category');
+            if ($active_cat) {
+                wp_set_post_categories($post_id, array($active_cat->term_id), true);
+                $this->log_message("Set 'deals' category for post");
+            } else {
+                $this->log_message("Warning: Could not find 'deals' category");
+            }
+            
+            // Verify the post was created and has the expected properties
+            $post = get_post($post_id);
+            if ($post) {
+                $this->log_message("Verified post exists with status: {$post->post_status} and scheduled date: {$post->post_date}");
+                
+                // Force post cache clear to ensure data is written to DB
+                clean_post_cache($post_id);
+                
+                // If post is scheduled, double check it's correctly set
+                if ($post->post_status === 'future') {
+                    $this->log_message("Post {$post_id} is scheduled for publication at {$post->post_date}");
+                    
+                    // Verify future post queue
+                    wp_publish_post($post_id);
+                    wp_transition_post_status('future', 'publish', $post);
+                    
+                    // Set it back to future with fresh dates
+                    if (isset($schedule_data['post_date'])) {
+                        wp_update_post(array(
+                            'ID' => $post_id,
+                            'post_status' => 'future',
+                            'post_date' => $schedule_data['post_date'],
+                            'post_date_gmt' => isset($schedule_data['post_date_gmt']) ? 
+                                $schedule_data['post_date_gmt'] : 
+                                get_gmt_from_date($schedule_data['post_date'])
+                        ));
+                        $this->log_message("Re-applied future status to post {$post_id}");
+                    }
+                }
+            } else {
+                $this->log_message("WARNING: Post {$post_id} does not exist after creation");
+            }
+            
+            $this->log_message('Completed post creation successfully');
+            return $post_id;
+        } catch (Exception $e) {
+            $this->log_message('Exception during post creation: ' . $e->getMessage());
+            $this->log_message('Stack trace: ' . $e->getTraceAsString());
+            return false;
         }
-
-        $this->set_discount_tag($post_id, $product_data['price'], $product_data['sale_price']);
-        update_post_meta($post_id, self::POST_IDENTIFIER, 'true');
-        $this->log_message('Completed post creation successfully');
-        return $post_id;
     }
 
     /**

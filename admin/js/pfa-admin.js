@@ -13,7 +13,8 @@
         let currentStatus = {};
         let isRefreshing = false;
         let refreshTimer = null;
-
+        let refreshMessageTimeout = null;
+    
         // Initialize countdowns and periodic refresh
         initializeCountdowns();
         
@@ -37,7 +38,7 @@
                 debouncedRefresh();
             }, 500);
         }
-
+    
         /**
          * Debounced refresh to prevent multiple simultaneous calls
          */
@@ -52,6 +53,7 @@
                 }
             }, 300);
         }
+        
         /**
          * Refresh queue status via AJAX
          */
@@ -61,6 +63,9 @@
             isRefreshing = true;
             console.log("Refreshing queue status...");
             $("#refresh-queue-status").prop("disabled", true).text("Refreshing...");
+            
+            // Remove any existing success messages
+            $(".status-refresh-success").remove();
             
             $.ajax({
                 url: pfaData.ajaxurl,
@@ -86,33 +91,29 @@
                 }
             });
         }
-
+    
         /**
          * Update countdown timers
          */
         function updateCountdowns() {
             if (!currentStatus) return;
-
+    
             $(".pfa-countdown-timer").each(function() {
                 const $timer = $(this);
-                const $statusTime = $timer.siblings(".pfa-next-dripfeed-time, .pfa-next-daily-time");
+                const $statusTime = $timer.siblings(".pfa-next-dripfeed-time, .pfa-next-api-check, .pfa-next-daily-time");
                 const targetTimeStr = $statusTime.text();
-
+    
                 // Don't show countdown for status messages
                 if (
                     targetTimeStr.includes("Paused") ||
                     targetTimeStr.includes("limit reached") ||
-                    targetTimeStr.includes("posts scheduled")
+                    targetTimeStr.includes("posts scheduled") ||
+                    targetTimeStr === "Not scheduled"
                 ) {
                     $timer.text("");
                     return;
                 }
-
-                if (!targetTimeStr || targetTimeStr === "Not scheduled") {
-                    $timer.text("Not scheduled");
-                    return;
-                }
-
+    
                 // Only show countdown for actual timestamps
                 if (targetTimeStr.match(/\d{4}-\d{2}-\d{2}/)) {
                     const targetTime = moment.tz(targetTimeStr, pfaData.wp_timezone);
@@ -120,10 +121,10 @@
                         $timer.text("");
                         return;
                     }
-
+    
                     const now = moment();
                     const duration = moment.duration(targetTime.diff(now));
-
+    
                     if (duration.asSeconds() <= 0) {
                         $timer.text("Checking...");
                         debouncedRefresh();
@@ -142,45 +143,45 @@
                 }
             });
         }
-
+    
         /**
          * Update status display with new data
          */
         function updateStatusDisplay(data) {
             if (!data) return;
-
+    
             // Store current status
             currentStatus = data;
-
+    
             // Log the full data to confirm its structure
             console.log("Status Data:", data);
-
+    
             // Update automation status
             const $statusIndicator = $("#automation_status_indicator");
             let statusClass = data.automation_enabled ? "active" : "inactive";
             let statusText = data.automation_enabled ? "Active" : "Paused";
-
+    
             if (data.is_restricted_time) {
                 statusClass = "inactive";
                 statusText = "Paused (Night hours)";
             }
-
+    
             console.log("Automation Status:", statusClass, statusText);
             $statusIndicator
                 .removeClass("active inactive")
                 .addClass(statusClass)
                 .find("span")
                 .text(statusText);
-
+    
             // Update counters
             console.log("Posts Today:", data.posts_today, "/", data.max_posts);
             $(".pfa-posts-today").text(
                 `${data.posts_today} / ${data.max_posts}`
             );
-
+    
             // Update queue size
             $(".pfa-queue-size").text(data.queue_size);
-
+    
             // Update scheduled posts information
             console.log(
                 "Scheduled Posts:",
@@ -198,12 +199,12 @@
                     .text("No posts scheduled")
                     .removeAttr("title");
             }
-
+    
             // Update API check information
             console.log("API Check:", data.api_check);
             if (data.api_check) {
                 $(".pfa-next-api-check").text(data.api_check.next_check || "Not scheduled");
-
+    
                 let lastCheckHtml = "No check performed yet";
                 if (data.api_check.last_check_time && data.api_check.last_check_time !== 'Not Set') {
                     lastCheckHtml = `Found ${
@@ -218,7 +219,7 @@
                 $(".pfa-next-api-check").text("Not scheduled");
                 $(".pfa-last-check-results").text("No check performed yet");
             }
-
+    
             // Update archive stats
             console.log("Archive Stats:", data.archived_stats);
             if (data.archived_stats) {
@@ -233,7 +234,7 @@
             } else {
                 $(".pfa-archive-stats").text("0 total archived");
             }
-
+    
             // Update next daily check if available
             console.log("Next Daily Check:", data.next_daily);
             if (data.next_daily) {
@@ -245,24 +246,33 @@
                         moment.tz(data.next_daily, pfaData.wp_timezone).format()
                     );
             }
-
+    
+            // Clear any existing messages first
+            clearTimeout(refreshMessageTimeout);
+            $(".status-refresh-success").remove();
+            
             // Show refresh message
             const $message = $("<div>")
-                .addClass("notice notice-success")
+                .addClass("notice notice-success status-refresh-success")
                 .html("<p>Status refreshed successfully</p>")
-                .insertAfter("#refresh-queue-status")
-                .delay(2000)
-                .fadeOut(function() {
+                .insertAfter("#refresh-queue-status");
+                
+            refreshMessageTimeout = setTimeout(function() {
+                $message.fadeOut(function() {
                     $(this).remove();
                 });
+            }, 2000);
         }
 
         /**
          * Refresh status button handler
          */
-        $("#refresh-queue-status").on("click", function() {
+       $("#refresh-queue-status").on("click", function() {
             debouncedRefresh();
         });
+    
+        // Remove the window.load handler that would cause duplicate refreshes
+        $(window).off("load", refreshQueueStatus);
 
         /**
          * Save settings enhancement: refresh status after saving
@@ -317,9 +327,6 @@
                 }
             });
         });
-
-        // Remove duplicate refresh calls
-        $(window).off("load");
 
         /**
          * Setup schedules button handler
@@ -443,11 +450,21 @@
                                 </ul>
                             `;
                         }
+                        
+                        messageContent += `
+                            <p>
+                                <button type="button" class="button button-primary apply-discount-setting">
+                                    Apply This Discount Setting
+                                </button>
+                            </p>
+                        `;
         
                         $message.addClass("notice-success").html(messageContent).show();
-        
-                        // Note we don't update the last check results display
-                        // to avoid implying the settings have been saved
+                        
+                        // Add handler for Apply button
+                        $message.find('.apply-discount-setting').on('click', function() {
+                            $("#submit_settings").click();
+                        });
                         
                     } else {
                         $message
@@ -478,6 +495,7 @@
                 }
             });
         });
+        
 
         /**
          * Settings Form Submission
@@ -601,10 +619,3 @@
     });
 })(jQuery);
 
-
-$(window).on("load", function() {
-    // Short delay to ensure DOM is fully loaded
-    setTimeout(function() {
-        refreshQueueStatus();
-    }, 500);
-});

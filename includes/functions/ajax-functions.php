@@ -252,8 +252,8 @@ function pfa_check_discount_results() {
     try {
         $min_discount = isset($_POST['min_discount']) ? (int) sanitize_text_field($_POST['min_discount']) : 0;
         
-        // Don't save min_discount value here - just check the results
-        // This modification ensures we're just checking, not saving
+        // Important: We are NOT saving this value as an option anymore
+        // This is just used for the check
         
         $post_creator = PFA_Post_Creator::get_instance();
         $api_fetcher = PFA_API_Fetcher::get_instance();
@@ -275,6 +275,9 @@ function pfa_check_discount_results() {
 
         // Then filter for discount
         $discounted_products = array_filter($in_stock_products, function($product) use ($min_discount, $post_creator) {
+            if (!isset($product['price']) || !isset($product['sale_price'])) {
+                return false;
+            }
             $discount = $post_creator->calculate_discount($product['price'], $product['sale_price']);
             return $discount >= $min_discount;
         });
@@ -305,7 +308,9 @@ function pfa_check_discount_results() {
             
             foreach ($batch as $product) {
                 $products_checked++;
-                $product_identifier = md5($product['id'] . '|' . (isset($product['gtin']) ? $product['gtin'] : '') . '|' . (isset($product['mpn']) ? $product['mpn'] : ''));
+                $product_identifier = md5($product['id'] . '|' . 
+                    (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
+                    (isset($product['mpn']) ? $product['mpn'] : ''));
                 $exists = in_array($product_identifier, $existing_identifiers);
                 
                 if (!$exists) {

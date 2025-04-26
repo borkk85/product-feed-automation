@@ -168,25 +168,69 @@ class PFA_Queue_Manager {
      * @return   boolean               True if added, false otherwise.
      */
     public function add_to_queue($product) {
+        if (!isset($product['id'])) {
+            $this->log_message('Cannot add product to queue: Missing product ID');
+            return false;
+        }
+    
+        // Check automation status
         if (get_option('pfa_automation_enabled') !== 'yes') {
             $this->log_message('Automation is disabled. Cannot add to queue.');
             return false;
         }
-
+    
+        // Check for restricted hours
         $current_hour = (int)current_time('G');
         if ($current_hour >= 0 && $current_hour < 6) {
             $this->log_message('Cannot add to queue during restricted hours (00:00-06:00)');
             return false;
         }
-
-        $queue = $this->get_queue();
-        if (!$this->is_product_in_queue($product['id'], $queue)) {
-            $queue[] = $product;
-            set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
-            $this->log_message("Added product {$product['id']} to queue");
-            return true;
+    
+        // Get current queue with a direct DB query to avoid potential transient issues
+        $queue = $this->get_queue(true);
+        
+        // Check if product is already in queue
+        if ($this->is_product_in_queue($product['id'], $queue)) {
+            $this->log_message("Product {$product['id']} already in queue, skipping.");
+            return false;
         }
-        return false;
+        
+        // Check if queue has grown too large (safety limit)
+        if (count($queue) > 100) {
+            $this->log_message("Queue size exceeds limit (100). Consider processing existing items first.");
+            return false;
+        }
+        
+        try {
+            // Add to queue
+            $queue[] = $product;
+            
+            // Store with different method if transient fails
+            $transient_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+            
+            if (!$transient_success) {
+                $this->log_message("Transient storage failed for queue. Trying alternative storage.");
+                
+                // Alternative: Store in regular option as backup
+                update_option($this->queue_key . '_backup', $queue);
+                
+                // Try to clear transient and set again
+                delete_transient($this->queue_key);
+                $retry_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+                
+                if (!$retry_success) {
+                    $this->log_message("WARNING: Both transient storage attempts failed. Using backup option storage.");
+                } else {
+                    $this->log_message("Retry transient storage succeeded.");
+                }
+            }
+            
+            $this->log_message("Added product {$product['id']} to queue. Queue now has " . count($queue) . " items.");
+            return true;
+        } catch (Exception $e) {
+            $this->log_message("Exception adding product {$product['id']} to queue: " . $e->getMessage());
+            return false;
+        }
     }
 
     /**
@@ -217,15 +261,46 @@ class PFA_Queue_Manager {
             return null;
         }
     
+        // Get queue with potential backup recovery
         $queue = $this->get_queue();
-        if (!empty($queue)) {
+        $this->log_message("Retrieved queue with " . count($queue) . " items for processing");
+        
+        if (empty($queue)) {
+            $this->log_message("Queue is empty. No products to process.");
+            return null;
+        }
+    
+        try {
+            // Take the first item
             $product = array_shift($queue);
-            set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
-            $this->log_message("Retrieved next product from queue: {$product['id']}");
+            
+            // Validate product
+            if (!isset($product['id'])) {
+                $this->log_message("Retrieved invalid product without ID from queue, skipping.");
+                // Save the modified queue without this invalid item
+                set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+                // Try again recursively (just once to avoid potential infinite loops)
+                return (count($queue) > 0) ? $this->get_next_queued_product() : null;
+            }
+            
+            $product_id = $product['id'];
+            $this->log_message("Retrieved product {$product_id} from queue. {" . count($queue) . "} items remaining.");
+            
+            // Save the modified queue using both methods for reliability
+            $transient_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+            if (!$transient_success) {
+                $this->log_message("Warning: Failed to update transient queue after retrieving product {$product_id}");
+                update_option($this->queue_key . '_backup', $queue);
+            } else {
+                // Also update backup for consistency
+                update_option($this->queue_key . '_backup', $queue);
+            }
             
             return $product;
+        } catch (Exception $e) {
+            $this->log_message("Exception getting next product from queue: " . $e->getMessage());
+            return null;
         }
-        return null;
     }
     
     /**
@@ -235,8 +310,30 @@ class PFA_Queue_Manager {
      * @access   private
      * @return   array    Current queue.
      */
-    private function get_queue() {
-        return get_transient($this->queue_key) ?: array();
+    private function get_queue($bypass_cache = false) {
+        // Try transient first unless bypassing cache
+        if (!$bypass_cache) {
+            $queue = get_transient($this->queue_key);
+            if (is_array($queue)) {
+                $this->log_message("Retrieved queue from transient. Items: " . count($queue));
+                return $queue;
+            }
+        }
+        
+        // If transient failed or we're bypassing, try backup option
+        $backup_queue = get_option($this->queue_key . '_backup', array());
+        if (is_array($backup_queue) && !empty($backup_queue)) {
+            $this->log_message("Retrieved queue from backup option. Items: " . count($backup_queue));
+            
+            // Restore transient from backup
+            set_transient($this->queue_key, $backup_queue, DAY_IN_SECONDS);
+            
+            return $backup_queue;
+        }
+        
+        // If all else fails, return empty array
+        $this->log_message("No queue found in transient or backup. Returning empty queue.");
+        return array();
     }
 
     /**
@@ -249,11 +346,27 @@ class PFA_Queue_Manager {
      * @return   boolean                  True if product is in queue, false otherwise.
      */
     private function is_product_in_queue($product_id, $queue) {
+        if (empty($queue) || !is_array($queue)) {
+            return false;
+        }
+        
+        // First check: Simple loop to look for exact match
         foreach ($queue as $item) {
-            if ($item['id'] === $product_id) {
+            if (isset($item['id']) && $item['id'] === $product_id) {
+                $this->log_message("Product ID {$product_id} found in queue via exact match");
                 return true;
             }
         }
+    
+        // Second check: Handle type differences (string vs integer)
+        $product_id_string = (string)$product_id;
+        foreach ($queue as $item) {
+            if (isset($item['id']) && (string)$item['id'] === $product_id_string) {
+                $this->log_message("Product ID {$product_id} found in queue after type conversion");
+                return true;
+            }
+        }
+        
         return false;
     }
     
@@ -415,16 +528,24 @@ class PFA_Queue_Manager {
      */
     private function get_scheduled_posts_count() {
         global $wpdb;
-        $scheduled_posts = $wpdb->get_var($wpdb->prepare(
-            "SELECT COUNT(*) 
-            FROM {$wpdb->posts} p
-            JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-            WHERE p.post_type = 'post' 
-            AND p.post_status = 'future'
-            AND pm.meta_key = '_pfa_v2_post'
-            AND pm.meta_value = 'true'"
-        ));
-
+        
+        // Fixed SQL query with proper placeholders
+        $scheduled_posts = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(*) 
+                FROM {$wpdb->posts} p
+                JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                WHERE p.post_type = %s 
+                AND p.post_status = %s
+                AND pm.meta_key = %s
+                AND pm.meta_value = %s",
+                'post',
+                'future',
+                '_pfa_v2_post',
+                'true'
+            )
+        );
+    
         $this->log_message('Scheduled posts count from direct query: ' . $scheduled_posts);
         return (int) $scheduled_posts;
     }
@@ -437,7 +558,16 @@ class PFA_Queue_Manager {
      * @return   array                        Queue status data.
      */
     public function get_status($force_refresh = false) {
-        // Always force refresh on page load to ensure fresh data
+        // Check if this is coming from admin-ajax.php (AJAX request)
+        $is_ajax = (defined('DOING_AJAX') && DOING_AJAX);
+        
+        // If this is a direct page load (not AJAX), force refresh
+        if (!$is_ajax && !$force_refresh) {
+            $force_refresh = true;
+            $this->log_message('Auto-forcing refresh on direct page load');
+        }
+        
+        // Get cached status
         $cached_status = get_transient($this->cache_key);
         
         if (false === $cached_status || empty($cached_status) || $force_refresh) {
@@ -446,8 +576,9 @@ class PFA_Queue_Manager {
             // Always generate fresh data in these cases
             $status = $this->generate_status();
             
-            // Cache the status for future use
-            set_transient($this->cache_key, $status, $this->cache_expiry);
+            // Cache the status for future use, but with a shorter expiry on admin pages
+            $cache_time = $is_ajax ? $this->cache_expiry : 60; // 1 minute on admin pages
+            set_transient($this->cache_key, $status, $cache_time);
             
             return $status;
         }
@@ -636,7 +767,6 @@ class PFA_Queue_Manager {
         
         // Clear all caches
         $this->clear_status_cache();
-        delete_transient($this->queue_key);
         
         // Flush WordPress object cache to ensure fresh data
         wp_cache_flush();
@@ -647,7 +777,7 @@ class PFA_Queue_Manager {
         // Force immediate status update
         set_transient($this->cache_key, $status, $this->cache_expiry);
         
-        $this->log_message('Fresh status generated via AJAX: ' . print_r($status, true));
+        $this->log_message('Fresh status generated via AJAX: ' . json_encode($status));
         
         wp_send_json_success($status);
     }
