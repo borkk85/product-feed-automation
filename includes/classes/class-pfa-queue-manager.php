@@ -529,7 +529,6 @@ class PFA_Queue_Manager {
     private function get_scheduled_posts_count() {
         global $wpdb;
         
-        // Fixed SQL query with proper placeholders
         $scheduled_posts = $wpdb->get_var(
             $wpdb->prepare(
                 "SELECT COUNT(*) 
@@ -538,11 +537,13 @@ class PFA_Queue_Manager {
                 WHERE p.post_type = %s 
                 AND p.post_status = %s
                 AND pm.meta_key = %s
-                AND pm.meta_value = %s",
+                AND pm.meta_value = %s
+                AND p.post_date > %s", 
                 'post',
                 'future',
                 '_pfa_v2_post',
-                'true'
+                'true',
+                current_time('mysql')
             )
         );
     
@@ -613,7 +614,24 @@ class PFA_Queue_Manager {
         $limit_reached = $posts_today >= $max_posts;
         
         // Get scheduled posts
-        $scheduled_posts = $this->get_scheduled_posts_count();
+        $scheduled_posts_count = $this->get_scheduled_posts_count();
+    
+        // If zero scheduled posts found, try a direct query as failsafe
+        if ($scheduled_posts_count == 0) {
+            global $wpdb;
+            $failsafe_count = $wpdb->get_var(
+                "SELECT COUNT(*) 
+                FROM {$wpdb->posts} 
+                WHERE post_type = 'post' 
+                AND post_status = 'future'
+                AND post_date > '" . current_time('mysql') . "'"
+            );
+            
+            if ($failsafe_count > 0) {
+                $this->log_message("Found {$failsafe_count} scheduled posts in failsafe query, but 0 in primary query");
+                $scheduled_posts_count = $failsafe_count;
+            }
+        }
         
         // Get API check time with proper interval handling
         $next_api_check = get_option('pfa_next_api_check', 'Not scheduled');
@@ -654,7 +672,7 @@ class PFA_Queue_Manager {
             'automation_enabled' => $automation_enabled,
             'is_restricted_time' => $is_restricted_time,
             'limit_reached' => $limit_reached,
-            'scheduled_posts' => $scheduled_posts,
+            'scheduled_posts' => $scheduled_posts_count,
             'posts_today' => $posts_today,
             'max_posts' => $max_posts,
             'queue_size' => count($this->get_queue()),

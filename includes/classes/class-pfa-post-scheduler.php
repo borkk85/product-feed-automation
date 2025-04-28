@@ -153,154 +153,64 @@ class PFA_Post_Scheduler {
      */
     public function handle_dripfeed_publish() {
         $this->log_message('=== Starting Dripfeed Publish ===');
-    
-        if (get_option('pfa_automation_enabled') !== 'yes') {
-            $this->log_message('Automation is disabled. Dripfeed publishing skipped.');
-            return;
-        }
-    
+        
         try {
+            if (get_option('pfa_automation_enabled') !== 'yes') {
+                $this->log_message('Automation is disabled. Dripfeed publishing skipped.');
+                return;
+            }
+        
+            // Check for restricted hours (00:00-06:00)
             $timezone = new DateTimeZone(wp_timezone_string());
             $current_time = new DateTime('now', $timezone);
-    
-            // Check for restricted hours (00:00-06:00)
             $hour = (int)$current_time->format('H');
-            if ($hour < 6) {
+            
+            $this->log_message("Current hour: $hour in timezone " . $timezone->getName());
+            
+            if ($hour >= 0 && $hour < 6) {
                 $this->log_message("Restricted hours (00:00-06:00). Pausing dripfeed.");
                 return;
             }
-    
-            // New 6 AM control
-            if ($current_time->format('H:i') === '06:00') {
-                $this->log_message("6 AM transition period detected");
+        
+            // Call the batch scheduler
+            $this->check_and_queue_products();
+            
+            // If we're at 6 AM and no posts scheduled for today yet, also process one immediately
+            if ($hour == 6) {
                 $posts_today = $this->get_post_count_today();
                 
-                if ($posts_today > 0) {
-                    $this->log_message("Posts already exist for today at 6 AM, deferring to next interval");
-                    $this->schedule_next_dripfeed();
-                    return;
-                }
-                
-                // Force a delay if microseconds are too low to prevent multiple executions
-                $microseconds = (int)$current_time->format('u');
-                if ($microseconds < 500000) { // If in first half second of the minute
-                    $this->log_message("Too early in the minute at 6 AM, adding delay");
-                    usleep(1000000); // 1 second delay
-                }
-            }
-    
-            $posts_today = $this->get_post_count_today();
-            $this->log_message("Current post count for today: {$posts_today} (max: {$this->max_posts_per_day})");
-            if ($posts_today >= $this->max_posts_per_day) {
-                $this->log_message('Daily post limit reached. Skipping dripfeed publish.');
-                return;
-            }
-    
-            // Fetch the next product in the queue
-            $product = $this->queue_manager->get_next_queued_product();
-            if (!$product) {
-                $this->log_message('No products in queue. Fetching new products.');
-                $this->check_and_queue_products(); // Add log in this method
-                $product = $this->queue_manager->get_next_queued_product();
-                $this->log_message('After check_and_queue_products - Product: ' . ($product ? json_encode($product) : 'null'));
-            }
-    
-            if ($product) {
-                $advertisers = $this->api_fetcher->fetch_advertisers();
-                $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ? 
-                    $advertisers[$product['advertiserId']] : null;
-                
-                // Explicitly log presence/absence of advertiser data
-                if ($advertiser_data) {
-                    $this->log_message("Found advertiser data for ID: " . $product['advertiserId']);
-                } else {
-                    $this->log_message("No advertiser data found for ID: " . (isset($product['advertiserId']) ? $product['advertiserId'] : 'unknown'));
-                }
-            
-                if (!$this->post_creator->check_if_already_in_db($product['trackingLink'])) {
-                    // Calculate next time with randomized interval
-                    $base_interval = (int)$this->dripfeed_interval;
-                    $min_interval = max(1, $base_interval - 18); // Subtract up to 18 minutes
-                    $max_interval = $base_interval + 30; // Add up to 30 minutes
-                    $random_interval = rand($min_interval, $max_interval);
+                if ($posts_today == 0) {
+                    $this->log_message("6 AM with no posts today. Will process one post immediately.");
                     
-                    $this->log_message(sprintf(
-                        'Calculating next time with randomized interval: base=%d, random=%d minutes',
-                        $base_interval,
-                        $random_interval
-                    ));
-                    
-                    // Temporarily set randomized interval
-                    $this->dripfeed_interval = $random_interval;
-                    $next_time = $this->calculate_next_publish_time();
-                    $this->dripfeed_interval = $base_interval; // Reset to original
-                    
-                    if (!$next_time) {
-                        $this->log_message('No valid publish time available. Skipping dripfeed.');
-                        $this->schedule_next_dripfeed();
-                        return;
-                    }
-            
-                    $post_data = array(
-                        'post_status' => 'future',
-                        'post_date' => $next_time->format('Y-m-d H:i:s'),
-                        'post_date_gmt' => get_gmt_from_date($next_time->format('Y-m-d H:i:s')),
-                    );
-            
-                    $this->log_message('Attempting to schedule post: ' . print_r($post_data, true));
-                    
-                    // Add extra error handling and logging
-                    try {
-                        $result = $this->post_creator->create_product_post($product, $advertiser_data, $post_data);
-                        
-                        if ($result && !is_wp_error($result)) {
-                            // Check if result is an array with status
-                            if (is_array($result) && isset($result['status'])) {
-                                if ($result['status'] === 'exists') {
-                                    $this->log_message("Product already exists as post ID: " . $result['post_id']);
-                                } else {
-                                    $this->log_message("Post creation returned status: " . $result['status']);
-                                }
-                            } else {
-                                // Assume it's a post ID
+                    // Process one post from queue
+                    $product = $this->queue_manager->get_next_queued_product();
+                    if ($product) {
+                        $advertisers = $this->api_fetcher->fetch_advertisers();
+                        $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ? 
+                            $advertisers[$product['advertiserId']] : null;
+                            
+                        if (!$this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                            $post_data = array(
+                                'post_status' => 'publish', // Publish immediately
+                            );
+                            
+                            $result = $this->post_creator->create_product_post($product, $advertiser_data, $post_data);
+                            
+                            if ($result && !is_wp_error($result)) {
                                 $post_id = is_array($result) && isset($result['post_id']) ? $result['post_id'] : $result;
-                                $this->log_message("Successfully scheduled product ID: {$product['id']} for " . $next_time->format('Y-m-d H:i:s') . " (Post ID: {$post_id})");
-                                
-                                // Double-check the post was actually created with correct status
-                                $post = get_post($post_id);
-                                if ($post) {
-                                    $this->log_message("Verified post exists with status: " . $post->post_status . " and date: " . $post->post_date);
-                                } else {
-                                    $this->log_message("Warning: Post ID {$post_id} does not exist after creation!");
-                                }
+                                $this->log_message("Successfully published product ID: {$product['id']} immediately (Post ID: {$post_id})");
                             }
-                            $this->schedule_next_dripfeed();
-                        } else {
-                            if (is_wp_error($result)) {
-                                $this->log_message('Failed to schedule product: ');
-                            } else {
-                                $this->log_message('Failed to schedule product. Unknown error.');
-                            }
-                            // Since post creation failed, we should add the product back to the queue
-                            $this->queue_manager->add_to_queue($product);
                         }
-                    } catch (Exception $e) {
-                        $this->log_message('Exception during post creation: ' . $e->getMessage());
-                        // Add product back to queue on exception
-                        $this->queue_manager->add_to_queue($product);
                     }
-                } else {
-                    $this->log_message("Product {$product['id']} already exists, skipping.");
-                    $this->schedule_next_dripfeed();
                 }
-            } else {
-                $this->log_message('No eligible products found for publishing.');
-                $this->schedule_next_dripfeed();
             }
         } catch (Exception $e) {
-            $this->log_message('Error in handle_dripfeed_publish: ' . $e->getMessage());
+            $this->log_message('ERROR in handle_dripfeed_publish: ' . $e->getMessage());
             $this->log_message('Stack trace: ' . $e->getTraceAsString());
-            $this->schedule_next_dripfeed();
+        } finally {
+            // Always release the lock
+            delete_transient('pfa_dripfeed_lock');
+            $this->log_message('Dripfeed lock released');
         }
     }
 
@@ -723,13 +633,127 @@ class PFA_Post_Scheduler {
         return $next_time;
     }
 
+    public function debug_scheduled_posts() {
+        global $wpdb;
+        
+        $this->log_message("=== DEBUG: Scheduled Posts Visibility Check ===");
+        
+        // 1. Check with WordPress native query
+        $wp_scheduled = get_posts(array(
+            'post_type' => 'post',
+            'post_status' => 'future',
+            'posts_per_page' => -1,
+            'fields' => 'ids'
+        ));
+        
+        $this->log_message("WP Native Query: " . count($wp_scheduled) . " scheduled posts found");
+        
+        // 2. Check with direct SQL
+        $direct_sql = $wpdb->get_results(
+            "SELECT ID, post_title, post_date, post_status 
+             FROM {$wpdb->posts}
+             WHERE post_type = 'post'
+             AND post_status = 'future'
+             ORDER BY post_date ASC"
+        );
+        
+        $this->log_message("Direct SQL Query: " . count($direct_sql) . " scheduled posts found");
+        
+        // 3. Check with the plugin's meta condition
+        $with_meta = $wpdb->get_results(
+            "SELECT p.ID, p.post_title, p.post_date, p.post_status 
+             FROM {$wpdb->posts} p
+             JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+             WHERE p.post_type = 'post'
+             AND p.post_status = 'future'
+             AND pm.meta_key = '_pfa_v2_post'
+             AND pm.meta_value = 'true'
+             ORDER BY p.post_date ASC"
+        );
+        
+        $this->log_message("Plugin Meta Query: " . count($with_meta) . " scheduled posts found");
+        
+        // 4. Show details of each scheduled post
+        if (!empty($direct_sql)) {
+            $this->log_message("Details of scheduled posts:");
+            
+            foreach ($direct_sql as $post) {
+                $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
+                $post_date = get_post_meta($post->ID, 'post_date', true);
+                
+                $this->log_message(sprintf(
+                    "ID: %d, Title: %s, Date: %s, Has PFA Meta: %s",
+                    $post->ID,
+                    substr($post->post_title, 0, 30),
+                    $post->post_date,
+                    $has_meta ? 'YES' : 'NO'
+                ));
+                
+                // Check if all required meta is present
+                $required_meta = ['_pfa_v2_post', '_Amazone_produt_baseName', '_product_url', 'dynamic_amazone_link'];
+                $missing = [];
+                
+                foreach ($required_meta as $meta_key) {
+                    if (!get_post_meta($post->ID, $meta_key, true)) {
+                        $missing[] = $meta_key;
+                    }
+                }
+                
+                if (!empty($missing)) {
+                    $this->log_message("  Missing required meta: " . implode(', ', $missing));
+                }
+            }
+        }
+        
+        // 5. Check posts created today that might be incorrectly counted
+        $timezone = new DateTimeZone(wp_timezone_string());
+        $today_start = new DateTime('today', $timezone);
+        
+        $today_posts = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT ID, post_title, post_date, post_status 
+                 FROM {$wpdb->posts}
+                 WHERE post_type = 'post'
+                 AND post_date >= %s
+                 ORDER BY post_date ASC",
+                $today_start->format('Y-m-d H:i:s')
+            )
+        );
+        
+        $this->log_message("Posts created/dated today: " . count($today_posts));
+        
+        if (!empty($today_posts)) {
+            foreach ($today_posts as $post) {
+                $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
+                
+                $this->log_message(sprintf(
+                    "Today's post - ID: %d, Title: %s, Date: %s, Status: %s, Has PFA Meta: %s",
+                    $post->ID,
+                    substr($post->post_title, 0, 30),
+                    $post->post_date,
+                    $post->post_status,
+                    $has_meta ? 'YES' : 'NO'
+                ));
+            }
+        }
+        
+        $this->log_message("=== End Scheduled Posts Debug ===");
+        
+        return [
+            'wp_scheduled_count' => count($wp_scheduled),
+            'direct_sql_count' => count($direct_sql),
+            'with_meta_count' => count($with_meta),
+            'today_posts' => count($today_posts)
+        ];
+    }
+
     /**
      * Check for available products and queue them for publishing.
      *
      * @since    1.0.0
      */
     public function check_and_queue_products() {
-        $this->log_message('=== Starting check_and_queue_products with DETAILED LOGGING ===');
+        $this->log_message('=== Starting check_and_queue_products with batch scheduling ===');
     
         if (get_option('pfa_automation_enabled') !== 'yes') {
             $this->log_message('Automation is disabled. Skipping queue check.');
@@ -737,6 +761,14 @@ class PFA_Post_Scheduler {
         }
     
         try {
+            // Get current interval setting
+            $interval_minutes = (int)$this->dripfeed_interval;
+            $this->log_message("Using dripfeed interval: {$interval_minutes} minutes");
+            
+            // Calculate interval in hours (rounded)
+            $interval_hours = ceil($interval_minutes / 60);
+            $this->log_message("Interval in hours: {$interval_hours}");
+    
             // Fetch and analyze products
             $this->log_message('Fetching products from API...');
             $products = $this->api_fetcher->fetch_products();
@@ -749,11 +781,95 @@ class PFA_Post_Scheduler {
             $this->log_message('API returned ' . count($products) . ' total products');
             
             // Calculate available slots
-            $slots_available = $this->max_posts_per_day - $this->get_post_count_today();
-            $this->log_message('Available slots: ' . $slots_available);
+            $max_posts = $this->max_posts_per_day;
+            $posts_today = $this->get_post_count_today();
+            $slots_available = $max_posts - $posts_today;
+            $this->log_message("Available slots: {$slots_available} (max: {$max_posts}, today: {$posts_today})");
             
             if ($slots_available <= 0) {
                 $this->log_message('No slots available for today. Daily limit reached or exceeded.');
+                return;
+            }
+            
+            // Count current scheduled posts
+            global $wpdb;
+            $scheduled_posts = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT ID, post_date 
+                    FROM {$wpdb->posts} p
+                    JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+                    WHERE p.post_type = %s 
+                    AND p.post_status = %s
+                    AND pm.meta_key = %s
+                    AND pm.meta_value = %s
+                    ORDER BY p.post_date ASC",
+                    'post',
+                    'future',
+                    '_pfa_v2_post',
+                    'true'
+                )
+            );
+            
+            $scheduled_count = count($scheduled_posts);
+            $this->log_message("Currently scheduled posts: {$scheduled_count}");
+            
+            // Get timezone
+            $timezone = new DateTimeZone(wp_timezone_string());
+            $now = new DateTime('now', $timezone);
+            $current_hour = (int)$now->format('H');
+            $current_minute = (int)$now->format('i');
+            
+            // Calculate how many additional posts we can schedule
+            $posts_to_schedule = min($slots_available, $max_posts - $scheduled_count);
+            
+            if ($posts_to_schedule <= 0) {
+                $this->log_message("No need to schedule additional posts. Already at max limit.");
+                return;
+            }
+            
+            $this->log_message("Will attempt to schedule {$posts_to_schedule} posts");
+            
+            // Calculate start time for the first scheduled post
+            // If early morning (before 7 AM), start at 8 AM
+            // Otherwise, start at current time + interval
+            $next_time = clone $now;
+            if ($current_hour < 7) {
+                $next_time->setTime(8, 0, 0);
+                $this->log_message("Early morning: Starting schedule at 8:00 AM");
+            } else {
+                // Round to the next interval
+                $rounded_minutes = ceil($current_minute / 60) * 60;
+                $hours_to_add = floor($rounded_minutes / 60);
+                $minutes_to_set = $rounded_minutes % 60;
+                
+                $next_time->setTime(
+                    $current_hour + $hours_to_add + $interval_hours,
+                    $minutes_to_set,
+                    0
+                );
+                $this->log_message("Starting schedule at: " . $next_time->format('H:i'));
+            }
+            
+            // Check if we have any existing scheduled posts and need to adjust start time
+            if ($scheduled_count > 0) {
+                $last_scheduled = end($scheduled_posts);
+                $last_time = new DateTime($last_scheduled->post_date, $timezone);
+                $this->log_message("Last scheduled post at: " . $last_time->format('Y-m-d H:i:s'));
+                
+                // Start after the last scheduled post + interval
+                $next_candidate = clone $last_time;
+                $next_candidate->modify("+{$interval_minutes} minutes");
+                
+                if ($next_candidate > $next_time) {
+                    $next_time = $next_candidate;
+                    $this->log_message("Adjusted start time based on last scheduled post: " . $next_time->format('Y-m-d H:i:s'));
+                }
+            }
+            
+            // Check if we're past scheduling window for today (11 PM)
+            $end_of_day = new DateTime('today 23:00:00', $timezone);
+            if ($next_time > $end_of_day) {
+                $this->log_message("Too late to schedule more posts today. Next post would be after 11 PM.");
                 return;
             }
             
@@ -766,239 +882,136 @@ class PFA_Post_Scheduler {
             $existing_identifiers = get_option('pfa_product_identifiers', array());
             $this->log_message('Loaded ' . count($existing_identifiers) . ' existing product identifiers');
             
+            // Find eligible products
+            $eligible_products = [];
             $skipped = array('duplicate' => 0, 'exists' => 0, 'stock' => 0);
-            $queued = 0;
             
-            // Group products by advertiser first
-           $advertiser_groups = array();
             foreach ($products as $product) {
-                if (!isset($product['advertiserId'])) {
-                    $this->log_message('WARNING: Product missing advertiserId: ' . json_encode($product));
+                // Skip products not in stock
+                if (!isset($product['availability']) || $product['availability'] !== 'in_stock') {
+                    $skipped['stock']++;
                     continue;
                 }
                 
-                $advertiser_id = $product['advertiserId'];
-                if (!isset($advertiser_groups[$advertiser_id])) {
-                    $advertiser_groups[$advertiser_id] = array();
-                }
-                $advertiser_groups[$advertiser_id][] = $product;
-            }
-
-            $this->log_message(sprintf("Found %d different advertisers", count($advertiser_groups)));
-
-            // Get list of advertiser IDs and shuffle them for random order
-            $advertiser_ids = array_keys($advertiser_groups);
-            shuffle($advertiser_ids);
-
-            // Keep track of how many products we've taken from each advertiser
-            $advertiser_counts = array_fill_keys($advertiser_ids, 0);
-            $max_rounds = 10; // Prevent infinite loops
-            $round = 0;
-            $remaining_slots = $slots_available;
-
-            $this->log_message(sprintf("Starting distribution for %d advertisers with %d slots", 
-                            count($advertiser_ids), $slots_available));
-
-            while ($remaining_slots > 0 && $round < $max_rounds) {
-                $added_this_round = false;
-                
-                foreach ($advertiser_ids as $key => $advertiser_id) {
-                    if ($remaining_slots <= 0) break;
-
-                    // Check if the advertiser group exists - advertisers might be removed in previous iterations
-                    if (!isset($advertiser_groups[$advertiser_id]) || empty($advertiser_groups[$advertiser_id])) {
-                        $this->log_message("No products left for advertiser $advertiser_id, skipping");
-                        // Remove from the advertiser IDs array to prevent future iterations
-                        unset($advertiser_ids[$key]);
-                        continue;
-                    }
-
-                    $advertiser_products = $advertiser_groups[$advertiser_id];
-
-                    // Get in-stock variants for this advertiser
-                    $in_stock_variants = array_filter($advertiser_products, function($p) {
-                        if (!isset($p['availability'])) {
-                            $this->log_message('WARNING: Product missing availability: ' . (isset($p['id']) ? $p['id'] : 'unknown'));
-                            return false;
-                        }
-                        return $p['availability'] === 'in_stock';
-                    });
-
-                    if (empty($in_stock_variants)) {
-                        $skipped['stock'] += count($advertiser_products);
-                        $this->log_message("No in-stock products for advertiser $advertiser_id");
-                        unset($advertiser_groups[$advertiser_id]); // Remove empty advertiser
-                        unset($advertiser_ids[$key]); // Also remove from IDs array
-                        continue;
-                    }
-                    
-                    // Sort by discount (highest first)
-                    $post_creator = PFA_Post_Creator::get_instance();
-                    usort($in_stock_variants, function($a, $b) use ($post_creator) {
-                        if (!isset($a['price']) || !isset($a['sale_price']) || 
-                            !isset($b['price']) || !isset($b['sale_price'])) {
-                            return 0;
-                        }
-                        
-                        $discount_a = $post_creator->calculate_discount($a['price'], $a['sale_price']);
-                        $discount_b = $post_creator->calculate_discount($b['price'], $b['sale_price']);
-                        
-                        return $discount_b - $discount_a;
-                    });
-
-                    // Try to find a valid product from this advertiser
-                    foreach ($in_stock_variants as $variant_key => $variant) {
-                        if ($remaining_slots <= 0) break;
-                        
-                        if (!isset($variant['id'])) {
-                            $this->log_message('WARNING: Product missing ID, skipping');
-                            continue;
-                        }
-                        
-                        $variant_identifier = md5(
-                            $variant['id'] . '|' . 
-                            (isset($variant['gtin']) ? $variant['gtin'] : '') . '|' . 
-                            (isset($variant['mpn']) ? $variant['mpn'] : '')
-                        );
-
-                        if (in_array($variant_identifier, $existing_identifiers)) {
-                            $skipped['duplicate']++;
-                            continue;
-                        }
-
-                        if (!isset($variant['trackingLink'])) {
-                            $this->log_message('WARNING: Product ID ' . $variant['id'] . ' missing trackingLink, skipping');
-                            continue;
-                        }
-                        
-                        if ($post_creator->check_if_already_in_db($variant['trackingLink'])) {
-                            $skipped['exists']++;
-                            continue;
-                        }
-
-                        // Found a valid variant to use - add to queue
-                        $queue_manager = PFA_Queue_Manager::get_instance();
-                        $added = $queue_manager->add_to_queue($variant);
-                        
-                        if ($added) {
-                            $this->log_message(sprintf(
-                                "Added product from advertiser %s (ID: %s) to queue. Remaining slots: %d",
-                                $advertiser_id,
-                                $variant['id'],
-                                $remaining_slots - 1
-                            ));
-                            
-                            // Add to existing identifiers to prevent duplicates
-                            $existing_identifiers[] = $variant_identifier;
-                            update_option('pfa_product_identifiers', $existing_identifiers);
-                            
-                            $queued++;
-                            $remaining_slots--;
-                            $advertiser_counts[$advertiser_id]++;
-                            $added_this_round = true;
-                            
-                            // Remove the used product from the array
-                            unset($advertiser_groups[$advertiser_id][$variant_key]);
-                            // Re-index the array after removing an element
-                            $advertiser_groups[$advertiser_id] = array_values($advertiser_groups[$advertiser_id]);
-                            
-                            break; // Try next advertiser
-                        } else {
-                            $this->log_message("WARNING: Failed to add product ID " . $variant['id'] . " to queue");
-                        }
-                    }
+                // Check for duplicate identifiers
+                if (!isset($product['id'])) {
+                    continue;
                 }
                 
-                // Reindex advertiser_ids array after possible removals
-                $advertiser_ids = array_values($advertiser_ids);
+                $variant_identifier = md5(
+                    $product['id'] . '|' . 
+                    (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
+                    (isset($product['mpn']) ? $product['mpn'] : '')
+                );
+    
+                if (in_array($variant_identifier, $existing_identifiers)) {
+                    $skipped['duplicate']++;
+                    continue;
+                }
+    
+                // Check if already in database
+                if (!isset($product['trackingLink'])) {
+                    continue;
+                }
                 
-                $round++;
-                $this->log_message(sprintf("Completed round %d with %d products queued", $round, $queued));
-
-                // Only break if we haven't added anything AND we've done at least 2 rounds
-                if (!$added_this_round && $round >= 2) {
-                    $this->log_message(sprintf("No products added in round %d - breaking distribution loop", $round));
+                if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                    $skipped['exists']++;
+                    continue;
+                }
+                
+                // This product is eligible
+                $eligible_products[] = [
+                    'product' => $product,
+                    'identifier' => $variant_identifier
+                ];
+                
+                // Stop if we have enough eligible products
+                if (count($eligible_products) >= $posts_to_schedule) {
                     break;
                 }
             }
-        
-                // Log distribution of queued posts
-                foreach ($advertiser_counts as $advertiser_id => $count) {
-                    if ($count > 0) {
-                        $this->log_message(sprintf("Advertiser %s: %d products queued", $advertiser_id, $count));
+            
+            $this->log_message("Found " . count($eligible_products) . " eligible products to schedule");
+            
+            // If no eligible products, just return
+            if (empty($eligible_products)) {
+                $this->log_message("No eligible products found to schedule");
+                return;
+            }
+            
+            // Fetch advertisers data
+            $advertisers = $this->api_fetcher->fetch_advertisers();
+            
+            // Schedule the posts
+            $scheduled_count = 0;
+            $schedule_time = $next_time;
+            
+            foreach ($eligible_products as $item) {
+                $product = $item['product'];
+                $identifier = $item['identifier'];
+                
+                // Get advertiser data
+                $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ? 
+                    $advertisers[$product['advertiserId']] : null;
+                
+                $this->log_message("Scheduling product ID: {$product['id']} for {$schedule_time->format('Y-m-d H:i:s T')}");
+                
+                // Prepare post data
+                $post_data = array(
+                    'post_status' => 'future',
+                    'post_date' => $schedule_time->format('Y-m-d H:i:s'),
+                    'post_date_gmt' => get_gmt_from_date($schedule_time->format('Y-m-d H:i:s')),
+                );
+                
+                // Create the post
+                $result = $this->post_creator->create_product_post($product, $advertiser_data, $post_data);
+                
+                if ($result && !is_wp_error($result)) {
+                    // Add to existing identifiers to prevent duplicates
+                    $existing_identifiers[] = $identifier;
+                    update_option('pfa_product_identifiers', $existing_identifiers);
+                    
+                    $post_id = is_array($result) && isset($result['post_id']) ? $result['post_id'] : $result;
+                    $this->log_message("Successfully scheduled product ID: {$product['id']} for {$schedule_time->format('Y-m-d H:i:s')} (Post ID: {$post_id})");
+                    
+                    $scheduled_count++;
+                    
+                    // Calculate next schedule time - exactly respecting the interval
+                    $schedule_time = clone $schedule_time;
+                    $schedule_time->modify("+{$interval_minutes} minutes");
+                    
+                    // Don't schedule past 11 PM
+                    if ($schedule_time > $end_of_day) {
+                        $this->log_message("Reached end of scheduling window for today");
+                        break;
                     }
+                } else {
+                    $this->log_message("Failed to schedule product ID: {$product['id']}");
                 }
-        
-                $this->log_message(sprintf(
-                    'Queue summary: %d queued (of %d slots), %d duplicates, %d existing, %d out of stock, %d active advertisers',
-                    $queued,
-                    $slots_available,
-                    $skipped['duplicate'],
-                    $skipped['exists'],
-                    $skipped['stock'],
-                    count(array_filter($advertiser_counts))
-                ));
-                
-                // Force refresh of queue status after we add items
-                $queue_manager = PFA_Queue_Manager::get_instance();
-                $queue_manager->clear_status_cache();
-                
-                // If we successfully queued items, make sure the dripfeed is scheduled
-                if ($queued > 0) {
-                    $this->log_message("Successfully queued $queued products - ensuring dripfeed is scheduled");
-                    $this->schedule_next_dripfeed();
-                }
-        
-            } catch (Exception $e) {
-                $this->log_message('ERROR in check_and_queue_products: ' . $e->getMessage());
-                $this->log_message('Stack trace: ' . $e->getTraceAsString());
-            }
-        }
-
-    /**
-     * Schedule the next dripfeed event.
-     *
-     * @since    1.0.0
-     * @access   private
-     */
-    private function schedule_next_dripfeed() {
-        $this->log_message('=== Scheduling Next Dripfeed ===');
-
-        try {
-            wp_cache_flush();
-            clean_post_cache(0);
-            
-            $next_time = $this->calculate_next_publish_time();
-            $this->log_message('Next calculated time: ' . ($next_time ? $next_time->format('Y-m-d H:i:s') : 'null'));
-            
-            // If no valid time returned, schedule for tomorrow at 6 AM
-            if ($next_time === null) {
-                $timezone = new DateTimeZone(wp_timezone_string());
-                $next_time = new DateTime('tomorrow 06:00:00', $timezone);
-                $this->log_message('Cannot schedule more posts today. Scheduling for tomorrow at 6 AM');
-                $this->log_message('calculate_next_publish_time returned null - checking why:');
-                $this->log_message('Posts today: ' . $this->get_post_count_today());
             }
             
-            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
-            wp_schedule_single_event(
-                $next_time->getTimestamp(),
-                'pfa_dripfeed_publisher'
-            );
-
-            $this->log_message("Scheduled next dripfeed for: " . $next_time->format('Y-m-d H:i:s T'));
+            $this->log_message("Successfully scheduled {$scheduled_count} posts");
             
-            $next_scheduled = wp_next_scheduled('pfa_dripfeed_publisher');
-            if ($next_scheduled) {
-                $this->log_message("Verified next schedule: " . date('Y-m-d H:i:s T', $next_scheduled));
-            } else {
-                $this->log_message("Warning: Failed to verify next schedule");
+            // Force refresh of queue status
+            $queue_manager = PFA_Queue_Manager::get_instance();
+            $queue_manager->clear_status_cache();
+            
+            // Schedule next dripfeed if needed
+            if ($scheduled_count > 0) {
+                // Schedule for tomorrow at 6 AM
+                $tomorrow = new DateTime('tomorrow 06:00:00', $timezone);
+                wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+                wp_schedule_single_event($tomorrow->getTimestamp(), 'pfa_dripfeed_publisher');
+                $this->log_message("Scheduled next dripfeed for tomorrow at 6 AM: " . $tomorrow->format('Y-m-d H:i:s T'));
             }
+            
         } catch (Exception $e) {
-            $this->log_message("Error scheduling next dripfeed: " . $e->getMessage());
+            $this->log_message('ERROR in batch scheduling: ' . $e->getMessage());
+            $this->log_message('Stack trace: ' . $e->getTraceAsString());
         }
     }
 
+   
     /**
      * Get count of posts published today.
      *
