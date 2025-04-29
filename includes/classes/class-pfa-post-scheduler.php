@@ -882,56 +882,168 @@ class PFA_Post_Scheduler {
             $existing_identifiers = get_option('pfa_product_identifiers', array());
             $this->log_message('Loaded ' . count($existing_identifiers) . ' existing product identifiers');
             
-            // Find eligible products
-            $eligible_products = [];
-            $skipped = array('duplicate' => 0, 'exists' => 0, 'stock' => 0);
-            
+            // Group products by advertiser for diversity
+            $products_by_advertiser = array();
             foreach ($products as $product) {
                 // Skip products not in stock
                 if (!isset($product['availability']) || $product['availability'] !== 'in_stock') {
-                    $skipped['stock']++;
                     continue;
                 }
                 
-                // Check for duplicate identifiers
+                // Skip products without ID
                 if (!isset($product['id'])) {
                     continue;
                 }
                 
-                $variant_identifier = md5(
-                    $product['id'] . '|' . 
-                    (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
-                    (isset($product['mpn']) ? $product['mpn'] : '')
-                );
-    
-                if (in_array($variant_identifier, $existing_identifiers)) {
-                    $skipped['duplicate']++;
-                    continue;
-                }
-    
-                // Check if already in database
-                if (!isset($product['trackingLink'])) {
+                // Skip products without advertiser ID
+                if (!isset($product['advertiserId'])) {
                     continue;
                 }
                 
-                if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
-                    $skipped['exists']++;
-                    continue;
+                $advertiser_id = $product['advertiserId'];
+                
+                if (!isset($products_by_advertiser[$advertiser_id])) {
+                    $products_by_advertiser[$advertiser_id] = array();
                 }
                 
-                // This product is eligible
-                $eligible_products[] = [
-                    'product' => $product,
-                    'identifier' => $variant_identifier
-                ];
-                
-                // Stop if we have enough eligible products
+                $products_by_advertiser[$advertiser_id][] = $product;
+            }
+            
+            $advertisers_count = count($products_by_advertiser);
+            $this->log_message("Found products from {$advertisers_count} different advertisers");
+            
+            // Get list of advertiser IDs and shuffle to randomize
+            $advertiser_ids = array_keys($products_by_advertiser);
+            shuffle($advertiser_ids);
+            $this->log_message("Shuffled advertiser IDs for diversity");
+            
+            // Find eligible products while ensuring diversity
+            $eligible_products = array();
+            $used_advertisers = array();
+            $skipped = array('duplicate' => 0, 'exists' => 0, 'stock' => 0);
+            
+            // First, try to get one product from each advertiser
+            foreach ($advertiser_ids as $advertiser_id) {
+                // Skip if we already have enough products
                 if (count($eligible_products) >= $posts_to_schedule) {
                     break;
                 }
+                
+                $advertiser_products = $products_by_advertiser[$advertiser_id];
+                
+                // Find an eligible product from this advertiser
+                foreach ($advertiser_products as $product) {
+                    $variant_identifier = md5(
+                        $product['id'] . '|' . 
+                        (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
+                        (isset($product['mpn']) ? $product['mpn'] : '')
+                    );
+                    
+                    // Skip if already used
+                    if (in_array($variant_identifier, $existing_identifiers)) {
+                        $skipped['duplicate']++;
+                        continue;
+                    }
+                    
+                    // Skip if already in database
+                    if (!isset($product['trackingLink'])) {
+                        continue;
+                    }
+                    
+                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                        $skipped['exists']++;
+                        continue;
+                    }
+                    
+                    // This product is eligible
+                    $eligible_products[] = array(
+                        'product' => $product,
+                        'identifier' => $variant_identifier,
+                        'advertiser_id' => $advertiser_id
+                    );
+                    $used_advertisers[] = $advertiser_id;
+                    
+                    $this->log_message("Selected eligible product ID: {$product['id']} from advertiser: {$advertiser_id}");
+                    break; // Only take one product per advertiser in this first pass
+                }
             }
             
-            $this->log_message("Found " . count($eligible_products) . " eligible products to schedule");
+            // If we still need more products, take additional ones
+            // but try to maintain diversity
+            if (count($eligible_products) < $posts_to_schedule) {
+                // Re-shuffle advertisers for second pass
+                shuffle($advertiser_ids);
+                
+                foreach ($advertiser_ids as $advertiser_id) {
+                    // Skip if we already have enough products
+                    if (count($eligible_products) >= $posts_to_schedule) {
+                        break;
+                    }
+                    
+                    $advertiser_products = $products_by_advertiser[$advertiser_id];
+                    
+                    // Sort products by discount (highest first)
+                    usort($advertiser_products, function($a, $b) {
+                        if (!isset($a['price']) || !isset($a['sale_price']) || 
+                            !isset($b['price']) || !isset($b['sale_price'])) {
+                            return 0;
+                        }
+                        
+                        $discount_a = $this->post_creator->calculate_discount($a['price'], $a['sale_price']);
+                        $discount_b = $this->post_creator->calculate_discount($b['price'], $b['sale_price']);
+                        
+                        return $discount_b - $discount_a;
+                    });
+                    
+                    // Try to find another eligible product from this advertiser
+                    foreach ($advertiser_products as $product) {
+                        $variant_identifier = md5(
+                            $product['id'] . '|' . 
+                            (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
+                            (isset($product['mpn']) ? $product['mpn'] : '')
+                        );
+                        
+                        // Skip if already used
+                        if (in_array($variant_identifier, $existing_identifiers)) {
+                            continue;
+                        }
+                        
+                        // Skip if already in database
+                        if (!isset($product['trackingLink'])) {
+                            continue;
+                        }
+                        
+                        if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                            continue;
+                        }
+                        
+                        // Skip if we already used a product with this ID
+                        $already_selected = false;
+                        foreach ($eligible_products as $item) {
+                            if ($item['product']['id'] === $product['id']) {
+                                $already_selected = true;
+                                break;
+                            }
+                        }
+                        
+                        if ($already_selected) {
+                            continue;
+                        }
+                        
+                        // This product is eligible
+                        $eligible_products[] = array(
+                            'product' => $product,
+                            'identifier' => $variant_identifier,
+                            'advertiser_id' => $advertiser_id
+                        );
+                        
+                        $this->log_message("Selected additional eligible product ID: {$product['id']} from advertiser: {$advertiser_id}");
+                        break; // Only take one more product per advertiser
+                    }
+                }
+            }
+            
+            $this->log_message("Final selection: " . count($eligible_products) . " eligible products from " . count(array_unique(array_column($eligible_products, 'advertiser_id'))) . " different advertisers");
             
             // If no eligible products, just return
             if (empty($eligible_products)) {
@@ -949,12 +1061,12 @@ class PFA_Post_Scheduler {
             foreach ($eligible_products as $item) {
                 $product = $item['product'];
                 $identifier = $item['identifier'];
+                $advertiser_id = $item['advertiser_id'];
                 
                 // Get advertiser data
-                $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ? 
-                    $advertisers[$product['advertiserId']] : null;
+                $advertiser_data = isset($advertisers[$advertiser_id]) ? $advertisers[$advertiser_id] : null;
                 
-                $this->log_message("Scheduling product ID: {$product['id']} for {$schedule_time->format('Y-m-d H:i:s T')}");
+                $this->log_message("Scheduling product ID: {$product['id']} from advertiser: {$advertiser_id} for {$schedule_time->format('Y-m-d H:i:s T')}");
                 
                 // Prepare post data
                 $post_data = array(
@@ -972,7 +1084,7 @@ class PFA_Post_Scheduler {
                     update_option('pfa_product_identifiers', $existing_identifiers);
                     
                     $post_id = is_array($result) && isset($result['post_id']) ? $result['post_id'] : $result;
-                    $this->log_message("Successfully scheduled product ID: {$product['id']} for {$schedule_time->format('Y-m-d H:i:s')} (Post ID: {$post_id})");
+                    $this->log_message("Successfully scheduled product ID: {$product['id']} from advertiser: {$advertiser_id} for {$schedule_time->format('Y-m-d H:i:s')} (Post ID: {$post_id})");
                     
                     $scheduled_count++;
                     
