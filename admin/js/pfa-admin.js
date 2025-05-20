@@ -562,14 +562,14 @@
             var $submitButton = $(this).find('button[type="submit"]');
             
             $submitButton.prop('disabled', true);
-
+        
             $.ajax({
                 url: pfaData.ajaxurl,
                 type: "POST",
                 data: formData + "&action=pfa_create_manual_post&nonce=" + pfaData.nonce,
                 success: function(response) {
                     const $message = $("<div>").addClass("notice");
-
+        
                     if (response.success) {
                         $message
                             .addClass("notice-success")
@@ -586,7 +586,7 @@
                                 }</p>`
                             );
                     }
-
+        
                     $message
                         .insertAfter("#pfa-manual-post-form")
                         .fadeIn()

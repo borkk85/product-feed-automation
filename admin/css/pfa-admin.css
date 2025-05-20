@@ -19,6 +19,33 @@
     flex-wrap: wrap;
     gap: 20px;
     margin-top: 20px;
+    flex-direction: column;
+}
+
+.pfa-column:first-child {
+    width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 20px;
+}
+
+.pfa-column:first-child .pfa-panel {
+    flex: 1;
+    min-width: 300px;
+}
+
+.pfa-settings-panel {
+    width: 100%;
+}
+
+@media screen and (max-width: 782px) {
+    .pfa-column:first-child {
+        flex-direction: column;
+    }
+    
+    .pfa-column:first-child .pfa-panel {
+        width: 100%;
+    }
 }
 
 .pfa-column {

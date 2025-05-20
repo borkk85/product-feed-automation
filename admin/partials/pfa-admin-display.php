@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Provide a admin area view for the plugin
  *
@@ -36,14 +37,14 @@ $status_data = $queue_manager->get_status(true);
 
 <div class="wrap pfa-admin-wrap">
     <h1><?php echo esc_html(get_admin_page_title()); ?></h1>
-    
+
     <div class="pfa-admin-container">
         <div class="pfa-columns">
             <!-- Left Column: Automation Controls -->
             <div class="pfa-column pfa-automation-panel">
                 <div class="pfa-automation-status pfa-panel">
                     <h2><?php _e('Automation Status', 'product-feed-automation'); ?></h2>
-                    
+
                     <!-- Automation Toggle -->
                     <div class="pfa-automation-controls">
                         <p><strong><?php _e('Automation:', 'product-feed-automation'); ?></strong></p>
@@ -52,11 +53,11 @@ $status_data = $queue_manager->get_status(true);
                             <option value="no" <?php selected($automation_enabled, 'no'); ?>><?php _e('Disabled', 'product-feed-automation'); ?></option>
                         </select>
                         <div id="automation_status_indicator" class="<?php echo $status_data['automation_enabled'] ? 'active' : 'inactive'; ?>">
-                            <?php _e('Current Status:', 'product-feed-automation'); ?> 
+                            <?php _e('Current Status:', 'product-feed-automation'); ?>
                             <span><?php echo $status_data['automation_enabled'] ? _e('Active', 'product-feed-automation') : _e('Paused', 'product-feed-automation'); ?></span>
                         </div>
                     </div>
-                    
+
                     <!-- Queue Status -->
                     <div class="pfa-queue-status">
                         <h3><?php _e('Queue Status', 'product-feed-automation'); ?></h3>
@@ -72,7 +73,7 @@ $status_data = $queue_manager->get_status(true);
                                 <p>
                                     <strong><?php _e('Posts Today:', 'product-feed-automation'); ?></strong>
                                     <span class="pfa-posts-today">
-                                        <?php 
+                                        <?php
                                         if (isset($status_data['posts_today']) && isset($status_data['max_posts'])) {
                                             echo esc_html($status_data['posts_today']) . ' / ' . esc_html($status_data['max_posts']);
                                         } else {
@@ -81,7 +82,7 @@ $status_data = $queue_manager->get_status(true);
                                         ?>
                                     </span>
                                 </p>
-                                
+
                                 <p>
                                     <strong><?php _e('Queue Size:', 'product-feed-automation'); ?></strong>
                                     <span class="pfa-queue-size">
@@ -94,7 +95,7 @@ $status_data = $queue_manager->get_status(true);
                                 <p>
                                     <strong><?php _e('Next API Check:', 'product-feed-automation'); ?></strong>
                                     <span class="pfa-next-api-check">
-                                        <?php 
+                                        <?php
                                         if (isset($status_data['api_check']['next_check'])) {
                                             echo esc_html($status_data['api_check']['next_check']);
                                         } else {
@@ -104,7 +105,7 @@ $status_data = $queue_manager->get_status(true);
                                     </span>
                                     <span class="pfa-check-interval-text">(<?php echo ucfirst(esc_html($check_interval)); ?> <?php _e('checks', 'product-feed-automation'); ?>)</span>
                                 </p>
-                                
+
                                 <p>
                                     <strong><?php _e('Last Check Results:', 'product-feed-automation'); ?></strong>
                                     <span class="pfa-last-check-results">
@@ -122,11 +123,11 @@ $status_data = $queue_manager->get_status(true);
                                         <?php endif; ?>
                                     </span>
                                 </p>
-                                
+
                                 <p>
                                     <strong><?php _e('Archive Status:', 'product-feed-automation'); ?></strong>
                                     <span class="pfa-archive-stats">
-                                        <?php 
+                                        <?php
                                         if (isset($status_data['archived_stats'])) {
                                             echo esc_html($status_data['archived_stats']['total']) . ' ' . __('total archived', 'product-feed-automation');
                                             if (!empty($status_data['archived_stats']['recent'])) {
@@ -141,8 +142,8 @@ $status_data = $queue_manager->get_status(true);
                             </div>
 
                             <div class="pfa-system-info">
-                                <p><strong><?php _e('Current Server Time:', 'product-feed-automation'); ?></strong> 
-                                <?php echo isset($status_data['current_time']) ? esc_html($status_data['current_time']) : current_time('Y-m-d H:i:s T'); ?></p>
+                                <p><strong><?php _e('Current Server Time:', 'product-feed-automation'); ?></strong>
+                                    <?php echo isset($status_data['current_time']) ? esc_html($status_data['current_time']) : current_time('Y-m-d H:i:s T'); ?></p>
                             </div>
                         </div>
 
@@ -158,14 +159,14 @@ $status_data = $queue_manager->get_status(true);
                         </div>
                     </div>
                 </div>
-                
+
                 <!-- Manual Post Creation Panel -->
                 <div class="pfa-manual-post-panel pfa-panel">
                     <h2><?php _e('Manual Post Creation', 'product-feed-automation'); ?></h2>
-                    
+
                     <div id="pfa-manual-post-message" class="notice" style="display: none;"></div>
-                    
-                    <form method="post" id="pfa-manual-post-form" action="">
+
+                   <form method="post" id="pfa-manual-post-form" action="">
                         <table class="form-table">
                             <tr>
                                 <th scope="row"><label for="post_title"><?php _e('Post Title', 'product-feed-automation'); ?></label></th>
@@ -196,11 +197,30 @@ $status_data = $queue_manager->get_status(true);
                                 <td><input type="url" id="brand_image" name="brand_image" class="regular-text"></td>
                             </tr>
                             <tr>
+                                <th scope="row"><label for="product_category"><?php _e('Check if Category Exists:', 'product-feed-automation'); ?></label></th>
+                                <td><?php
+                                    wp_dropdown_categories(array(
+                                        'taxonomy'         => 'product_categories',
+                                        'name'             => 'product_category',
+                                        'orderby'          => 'name',
+                                        'order'            => 'ASC',
+                                        'show_count'       => 0,
+                                        'hide_empty'       => 0,
+                                        'child_of'         => 0,
+                                        'echo'             => 1,
+                                        'hierarchical'     => 1,
+                                        'depth'            => 3,
+                                        'show_option_none' => __('Select Category', 'product-feed-automation'),
+                                    ));
+                                    ?>
+                                </td>
+                            </tr>
+                            <tr>
                                 <th scope="row"><label for="category"><?php _e('Category', 'product-feed-automation'); ?></label></th>
                                 <td><input type="text" id="category" name="category" class="regular-text" placeholder="<?php _e('e.g., Electronics > Computers > Laptops', 'product-feed-automation'); ?>"></td>
                             </tr>
                         </table>
-                        
+
                         <p class="submit">
                             <button type="submit" name="submit_manual_post" class="button-primary">
                                 <?php _e('Create Post', 'product-feed-automation'); ?>
@@ -209,14 +229,14 @@ $status_data = $queue_manager->get_status(true);
                     </form>
                 </div>
             </div>
-            
+
             <!-- Right Column: Settings -->
             <div class="pfa-column pfa-settings-panel">
                 <div class="pfa-settings pfa-panel">
                     <h2><?php _e('Plugin Settings', 'product-feed-automation'); ?></h2>
-                    
+
                     <div id="pfa-settings-message" class="notice" style="display: none;"></div>
-                    
+
                     <form method="post" id="pfa-settings-form" action="">
                         <h3><?php _e('API Credentials', 'product-feed-automation'); ?></h3>
                         <table class="form-table">
@@ -233,16 +253,16 @@ $status_data = $queue_manager->get_status(true);
                                 <td><input type="password" id="ai_api_key" name="ai_api_key" value="<?php echo esc_attr($ai_api_key); ?>" class="regular-text"></td>
                             </tr>
                         </table>
-                        
+
                         <h3><?php _e('Content Generation Settings', 'product-feed-automation'); ?></h3>
                         <table class="form-table">
                             <tr>
                                 <th scope="row"><label for="ai_model"><?php _e('AI Model', 'product-feed-automation'); ?></label></th>
                                 <td>
                                     <select id="ai_model" name="ai_model">
-                                        <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
-                                        <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
-                                        <option value="gpt-4-turbo" <?php selected($ai_model, 'gpt-4-turbo'); ?>><?php _e('GPT-4 Turbo', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-4o-mini" <?php selected($ai_model, 'gpt-4o-mini'); ?>><?php _e('GPT-4o Mini', 'product-feed-automation'); ?></option>
                                     </select>
                                 </td>
                             </tr>
@@ -259,7 +279,7 @@ $status_data = $queue_manager->get_status(true);
                                 <td><textarea id="prompt_for_ai" name="prompt_for_ai" rows="5" cols="50"><?php echo esc_textarea($prompt_for_ai); ?></textarea></td>
                             </tr>
                         </table>
-                        
+
                         <h3><?php _e('Automation Settings', 'product-feed-automation'); ?></h3>
                         <table class="form-table">
                             <tr>
@@ -288,7 +308,7 @@ $status_data = $queue_manager->get_status(true);
                                 <td><input type="number" id="dripfeed_interval" name="dripfeed_interval" value="<?php echo esc_attr($dripfeed_interval); ?>" class="small-text" min="1"></td>
                             </tr>
                         </table>
-                        
+
                         <p class="submit">
                             <input type="submit" name="submit_settings" id="submit_settings" class="button-primary" value="<?php _e('Save Settings', 'product-feed-automation'); ?>">
                         </p>
