@@ -240,68 +240,88 @@ class PFA_Queue_Manager {
      * @return   array|null    Next queued product or null if none available.
      */
     public function get_next_queued_product() {
-        if (get_option('pfa_automation_enabled') !== 'yes') {
-            $this->log_message('Automation is disabled. Cannot process queue.');
-            return null;
-        }
-    
-        $current_hour = (int)current_time('G');
-        static $processed_at_six = false;
-    
-        if ($current_hour === 6 && !$processed_at_six) {
-            $this->log_message("Processing the first product of the day at 06:00.");
-            $processed_at_six = true; 
-        } elseif ($current_hour === 6) {
-            $this->log_message("Skipping extra processing at 06:00 to avoid burst.");
-            return null;
-        }
-    
-        if ($current_hour >= 0 && $current_hour < 6) {
-            $this->log_message('Cannot process queue during restricted hours (00:00-06:00)');
-            return null;
-        }
-    
-        // Get queue with potential backup recovery
-        $queue = $this->get_queue();
-        $this->log_message("Retrieved queue with " . count($queue) . " items for processing");
-        
-        if (empty($queue)) {
-            $this->log_message("Queue is empty. No products to process.");
-            return null;
-        }
-    
-        try {
-            // Take the first item
-            $product = array_shift($queue);
-            
-            // Validate product
-            if (!isset($product['id'])) {
-                $this->log_message("Retrieved invalid product without ID from queue, skipping.");
-                // Save the modified queue without this invalid item
-                set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
-                // Try again recursively (just once to avoid potential infinite loops)
-                return (count($queue) > 0) ? $this->get_next_queued_product() : null;
-            }
-            
-            $product_id = $product['id'];
-            $this->log_message("Retrieved product {$product_id} from queue. {" . count($queue) . "} items remaining.");
-            
-            // Save the modified queue using both methods for reliability
-            $transient_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
-            if (!$transient_success) {
-                $this->log_message("Warning: Failed to update transient queue after retrieving product {$product_id}");
-                update_option($this->queue_key . '_backup', $queue);
-            } else {
-                // Also update backup for consistency
-                update_option($this->queue_key . '_backup', $queue);
-            }
-            
-            return $product;
-        } catch (Exception $e) {
-            $this->log_message("Exception getting next product from queue: " . $e->getMessage());
-            return null;
-        }
+    if (get_option('pfa_automation_enabled') !== 'yes') {
+        $this->log_message('Automation is disabled. Cannot process queue.');
+        return null;
     }
+
+    $current_hour = (int)current_time('G');
+    
+    if ($current_hour >= 0 && $current_hour < 6) {
+        $this->log_message('Cannot process queue during restricted hours (00:00-06:00)');
+        return null;
+    }
+
+    // Get queue with potential backup recovery
+    $queue = $this->get_queue();
+    $queue_size = count($queue);
+    $this->log_message("Retrieved queue with {$queue_size} items for processing");
+    
+    if (empty($queue)) {
+        $this->log_message("Queue is empty. No products to process.");
+        return null;
+    }
+
+    try {
+        // Take the first item
+        $product = array_shift($queue);
+        
+        // Validate product
+        if (!isset($product['id'])) {
+            $this->log_message("Retrieved invalid product without ID from queue, skipping.");
+            
+            // Save the modified queue without this invalid item
+            set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+            update_option($this->queue_key . '_backup', $queue);
+            
+            // Try again recursively (just once to avoid potential infinite loops)
+            return ($queue_size > 1) ? $this->get_next_queued_product() : null;
+        }
+        
+        $product_id = $product['id'];
+        $this->log_message("Retrieved product {$product_id} from queue. {" . count($queue) . "} items remaining.");
+        
+        // Check if product is already in database
+        if (isset($product['trackingLink'])) {
+            $post_creator = PFA_Post_Creator::get_instance();
+            if ($post_creator->check_if_already_in_db($product['trackingLink'])) {
+                $this->log_message("Product {$product_id} already exists in database, skipping and removing from queue.");
+                
+                // Save the modified queue
+                set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+                update_option($this->queue_key . '_backup', $queue);
+                
+                // Try the next product
+                return ($queue_size > 1) ? $this->get_next_queued_product() : null;
+            }
+        }
+        
+        // Save the modified queue
+        $transient_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+        if (!$transient_success) {
+            $this->log_message("Warning: Failed to update transient queue after retrieving product {$product_id}");
+            
+            // Try to delete then set the transient again
+            delete_transient($this->queue_key);
+            $retry_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+            
+            if (!$retry_success) {
+                $this->log_message("Critical: Both attempts to update queue transient failed.");
+            }
+        }
+        
+        // Always update backup for consistency
+        update_option($this->queue_key . '_backup', $queue);
+        
+        // Force cache refresh
+        $this->clear_status_cache();
+        
+        return $product;
+    } catch (Exception $e) {
+        $this->log_message("Exception getting next product from queue: " . $e->getMessage());
+        return null;
+    }
+}
     
     /**
      * Get the current queue.
@@ -310,7 +330,7 @@ class PFA_Queue_Manager {
      * @access   private
      * @return   array    Current queue.
      */
-    private function get_queue($bypass_cache = false) {
+    public function get_queue($bypass_cache = false) {
         // Try transient first unless bypassing cache
         if (!$bypass_cache) {
             $queue = get_transient($this->queue_key);

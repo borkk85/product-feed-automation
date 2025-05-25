@@ -617,5 +617,79 @@
         // Initialize by getting initial status
         refreshQueueStatus();
     });
+
+    $("#debug-schedules").on("click", function() {
+    var $button = $(this);
+    $button.prop("disabled", true).text("Checking...");
+
+    $.ajax({
+        url: pfaData.ajaxurl,
+        type: "POST",
+        data: {
+            action: "pfa_debug_schedules",
+            nonce: pfaData.nonce
+        },
+        success: function(response) {
+            if (response.success) {
+                var data = response.data;
+                var html = '<div class="pfa-debug-results" style="max-height: 400px; overflow-y: auto; padding: 15px; background: #f5f5f5; border: 1px solid #ddd; margin-top: 10px;">';
+                
+                // Show schedules
+                html += '<h3>Scheduled Events</h3>';
+                if (data.schedules.length === 0) {
+                    html += '<p style="color: red;">No PFA schedules found!</p>';
+                } else {
+                    html += '<ul>';
+                    for (var i = 0; i < data.schedules.length; i++) {
+                        var s = data.schedules[i];
+                        html += '<li><strong>' + s.hook + '</strong>: ' + s.datetime + ' (' + Math.floor(s.seconds_to_run / 60) + ' minutes from now)</li>';
+                    }
+                    html += '</ul>';
+                }
+                
+                // Show queue status
+                html += '<h3>Queue Status</h3>';
+                html += '<p>Queue Size: ' + data.queue_size + '</p>';
+                
+                // Show settings
+                html += '<h3>Plugin Settings</h3>';
+                html += '<ul>';
+                for (var key in data.settings) {
+                    html += '<li><strong>' + key + '</strong>: ' + data.settings[key] + '</li>';
+                }
+                html += '</ul>';
+                
+                // Show post count
+                html += '<h3>Posts Status</h3>';
+                html += '<p>Posts Today: ' + data.posts_today + '</p>';
+                
+                // Show locks
+                html += '<h3>Transient Locks</h3>';
+                html += '<ul>';
+                for (var key in data.locks) {
+                    html += '<li><strong>' + key + '</strong>: ' + data.locks[key] + '</li>';
+                }
+                html += '</ul>';
+                
+                // Show server time
+                html += '<h3>Server Time</h3>';
+                html += '<p>' + data.server_time + '</p>';
+                
+                html += '</div>';
+                
+                $(".pfa-debug-results").remove();
+                $(html).insertAfter($button.closest(".pfa-status-actions"));
+            } else {
+                alert("Error fetching debug information: " + (response.data ? response.data.message : "Unknown error"));
+            }
+        },
+        error: function() {
+            alert("Server error occurred while fetching debug information");
+        },
+        complete: function() {
+            $button.prop("disabled", false).text("Debug Schedules");
+        }
+    });
+});
 })(jQuery);
 

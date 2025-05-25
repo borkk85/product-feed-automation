@@ -395,3 +395,70 @@ function pfa_refresh_status() {
     wp_send_json_success($status);
 }
 add_action('wp_ajax_pfa_refresh_status', 'pfa_refresh_status');
+
+function pfa_debug_schedules() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+    
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+    
+    // Check all scheduled events
+    $cron = _get_cron_array();
+    $schedules = array();
+    
+    if (!empty($cron)) {
+        foreach ($cron as $timestamp => $hooks) {
+            foreach ($hooks as $hook => $events) {
+                if (strpos($hook, 'pfa_') === 0) {
+                    $schedules[] = array(
+                        'hook' => $hook,
+                        'timestamp' => $timestamp,
+                        'datetime' => wp_date('Y-m-d H:i:s T', $timestamp),
+                        'seconds_to_run' => $timestamp - time(),
+                    );
+                }
+            }
+        }
+    }
+    
+    // Check queue status
+    $queue_manager = PFA_Queue_Manager::get_instance();
+    $queue = $queue_manager->get_queue();
+    $queue_size = count($queue);
+    
+    // Check all settings
+    $settings = array(
+        'enabled' => get_option('pfa_automation_enabled', 'yes'),
+        'max_posts_per_day' => get_option('max_posts_per_day', 10),
+        'min_discount' => get_option('min_discount', 0),
+        'check_interval' => get_option('check_interval', 'daily'),
+        'dripfeed_interval' => get_option('dripfeed_interval', 30),
+    );
+    
+    // Check post count
+    $scheduler = PFA_Post_Scheduler::get_instance();
+    $posts_today = $scheduler->get_post_count_today();
+    
+    // Check transients
+    $locks = array(
+        'dripfeed_lock' => get_transient('pfa_dripfeed_lock') ? 'SET' : 'NOT SET',
+        'queue_status_cache' => get_transient('pfa_queue_status_cache') ? 'SET' : 'NOT SET',
+        'product_queue' => get_transient('pfa_product_queue') ? 'SET' : 'NOT SET',
+        'api_products_cache' => get_transient('pfa_api_products_cache') ? 'SET' : 'NOT SET',
+    );
+    
+    // Collect debug data
+    $debug_data = array(
+        'schedules' => $schedules,
+        'queue_size' => $queue_size,
+        'settings' => $settings,
+        'posts_today' => $posts_today,
+        'locks' => $locks,
+        'server_time' => current_time('mysql'),
+    );
+    
+    wp_send_json_success($debug_data);
+}
+add_action('wp_ajax_pfa_debug_schedules', 'pfa_debug_schedules');

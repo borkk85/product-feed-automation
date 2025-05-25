@@ -294,3 +294,55 @@ function get_queue_status_data() {
     $queue_manager = PFA_Queue_Manager::get_instance();
     return $queue_manager->get_status(true);
 }
+
+/**
+ * Add this code to the main plugin file (workflow.php) near the end, just before the 
+ * function product_feed_automation() or at the end of the file before the closing PHP tag.
+ */
+
+// Kick-start the plugin on version update
+register_activation_hook(__FILE__, 'pfa_force_restart_all_schedules');
+add_action('plugins_loaded', 'pfa_check_version_and_restart');
+
+/**
+ * Force restart all schedules on activation.
+ */
+function pfa_force_restart_all_schedules() {
+    // Clear all transients
+    delete_transient('pfa_dripfeed_lock');
+    delete_transient('pfa_product_queue');
+    delete_transient('pfa_queue_status_cache');
+    delete_transient('pfa_api_products_cache');
+    
+    // Reset backup options
+    update_option('pfa_product_queue_backup', array());
+    
+    // Clear all scheduled hooks
+    wp_clear_scheduled_hook('pfa_daily_check');
+    wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+    wp_clear_scheduled_hook('pfa_api_check');
+    wp_clear_scheduled_hook('pfa_clean_identifiers');
+    
+    // Force immediate initialization
+    $scheduler = PFA_Post_Scheduler::get_instance();
+    $scheduler->initialize_schedules();
+    
+    // Force immediate run of dripfeed (after 1 minute to ensure everything is set up)
+    wp_schedule_single_event(time() + 60, 'pfa_dripfeed_publisher');
+}
+
+/**
+ * Check for version change and restart if needed.
+ */
+function pfa_check_version_and_restart() {
+    $current_version = PFA_VERSION;
+    $stored_version = get_option('pfa_plugin_version', '0.0.0');
+    
+    if ($current_version !== $stored_version) {
+        // Store new version
+        update_option('pfa_plugin_version', $current_version);
+        
+        // Force restart
+        pfa_force_restart_all_schedules();
+    }
+}

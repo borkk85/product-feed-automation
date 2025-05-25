@@ -89,6 +89,9 @@ $status_data = $queue_manager->get_status(true);
                                         <?php echo isset($status_data['queue_size']) ? esc_html($status_data['queue_size']) : '0'; ?>
                                     </span>
                                 </p>
+                                <button type="button" id="debug-schedules" class="button">
+    <?php _e('Debug Schedules', 'product-feed-automation'); ?>
+</button>
                             </div>
 
                             <div class="pfa-api-status">
