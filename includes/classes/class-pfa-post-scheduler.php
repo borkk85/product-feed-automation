@@ -1038,7 +1038,13 @@ public function handle_dripfeed_publish() {
      *
      * @since    1.0.0
      */
-    public function check_and_queue_products() {
+    /**
+ * Check for available products and queue them for publishing.
+ * FIXED VERSION - Ensures advertiser diversity in scheduling
+ *
+ * @since    1.0.0
+ */
+public function check_and_queue_products() {
     $this->log_message('=== Starting check_and_queue_products ===');
 
     if (get_option('pfa_automation_enabled') !== 'yes') {
@@ -1074,12 +1080,6 @@ public function handle_dripfeed_publish() {
         $now = new DateTime('now', $timezone);
         $current_hour = (int)$now->format('H');
         
-        // Working hours: 6 AM to 11 PM (17 hours = 1020 minutes)
-        $working_minutes = 17 * 60;
-        $ideal_interval = max(30, min(120, floor($working_minutes / $max_posts)));
-        
-        $this->log_message("Target interval: {$ideal_interval} minutes between posts");
-        
         // Initialize product identifiers if needed
         if (get_option('pfa_product_identifiers') === false) {
             add_option('pfa_product_identifiers', array());
@@ -1089,8 +1089,12 @@ public function handle_dripfeed_publish() {
         $existing_identifiers = get_option('pfa_product_identifiers', array());
         $this->log_message('Loaded ' . count($existing_identifiers) . ' existing product identifiers');
         
-        // Group products by advertiser for diversity
-        $products_by_advertiser = array();
+        // Get minimum discount
+        $min_discount = get_option('min_discount', 0);
+        
+        // Filter eligible products first
+        $eligible_products = array();
+        
         foreach ($products as $product) {
             // Skip products not in stock
             if (!isset($product['availability']) || $product['availability'] !== 'in_stock') {
@@ -1108,170 +1112,137 @@ public function handle_dripfeed_publish() {
             $discount = $this->post_creator->calculate_discount($product['price'], $product['sale_price']);
             
             // Skip products with insufficient discount
-            $min_discount = get_option('min_discount', 0);
             if ($discount < $min_discount) {
                 continue;
             }
             
-            $advertiser_id = $product['advertiserId'];
+            // Generate unique identifier
+            $variant_identifier = md5(
+                $product['id'] . '|' . 
+                (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
+                (isset($product['mpn']) ? $product['mpn'] : '')
+            );
             
+            // Skip if already used
+            if (in_array($variant_identifier, $existing_identifiers)) {
+                continue;
+            }
+            
+            // Skip if already in database
+            if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                continue;
+            }
+            
+            // Add to eligible products with metadata
+            $eligible_products[] = array(
+                'product' => $product,
+                'identifier' => $variant_identifier,
+                'advertiser_id' => $product['advertiserId'],
+                'discount' => $discount
+            );
+        }
+        
+        $this->log_message('Found ' . count($eligible_products) . ' eligible products after filtering');
+        
+        if (empty($eligible_products)) {
+            $this->log_message('No eligible products found to schedule');
+            return;
+        }
+        
+        // Group by advertiser
+        $products_by_advertiser = array();
+        foreach ($eligible_products as $item) {
+            $advertiser_id = $item['advertiser_id'];
             if (!isset($products_by_advertiser[$advertiser_id])) {
                 $products_by_advertiser[$advertiser_id] = array();
             }
-            
-            $products_by_advertiser[$advertiser_id][] = $product;
+            $products_by_advertiser[$advertiser_id][] = $item;
         }
         
-        $advertisers_count = count($products_by_advertiser);
-        $this->log_message("Found products from {$advertisers_count} different advertisers");
+        $this->log_message('Products grouped into ' . count($products_by_advertiser) . ' advertisers');
         
-        // If no advertisers with eligible products, exit
-        if ($advertisers_count === 0) {
-            $this->log_message("No eligible products found to queue");
-            return;
+        // Sort each advertiser's products by discount (highest first)
+        foreach ($products_by_advertiser as $advertiser_id => &$advertiser_products) {
+            usort($advertiser_products, function($a, $b) {
+                return $b['discount'] - $a['discount'];
+            });
         }
         
-        // Get list of advertiser IDs and shuffle to randomize
-        $advertiser_ids = array_keys($products_by_advertiser);
-        shuffle($advertiser_ids);
-        $this->log_message("Shuffled advertiser IDs for diversity");
-        
-        // Prepare tracking arrays
+        // Select products with proper diversity
         $selected_products = array();
         $advertiser_usage = array();
         
-        // First pass: Try to get at least one product from each advertiser
-        foreach ($advertiser_ids as $advertiser_id) {
-            // Stop if we've reached the slots limit
-            if (count($selected_products) >= $slots_available) {
-                break;
-            }
-            
-            $advertiser_products = $products_by_advertiser[$advertiser_id];
-            
-            // Sort by discount (highest first)
-            usort($advertiser_products, function($a, $b) {
-                $discount_a = $this->post_creator->calculate_discount($a['price'], $a['sale_price']);
-                $discount_b = $this->post_creator->calculate_discount($b['price'], $b['sale_price']);
-                return $discount_b - $discount_a;
-            });
-            
-            // Find an eligible product from this advertiser
-            foreach ($advertiser_products as $product) {
-                // Generate unique identifier
-                $variant_identifier = md5(
-                    $product['id'] . '|' . 
-                    (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
-                    (isset($product['mpn']) ? $product['mpn'] : '')
-                );
-                
-                // Skip if already used
-                if (in_array($variant_identifier, $existing_identifiers)) {
-                    continue;
-                }
-                
-                // Skip if already in database
-                if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
-                    continue;
-                }
-                
-                // Add this product to the selection
-                $selected_products[] = array(
-                    'product' => $product,
-                    'identifier' => $variant_identifier,
-                    'advertiser_id' => $advertiser_id
-                );
-                
-                // Track that we used this advertiser
-                if (!isset($advertiser_usage[$advertiser_id])) {
-                    $advertiser_usage[$advertiser_id] = 0;
-                }
-                $advertiser_usage[$advertiser_id]++;
-                
-                $this->log_message("Selected product ID: {$product['id']} from advertiser: {$advertiser_id}");
-                
-                // Only take one product per advertiser in first pass
-                break;
-            }
+        // Initialize usage counter for all advertisers
+        foreach (array_keys($products_by_advertiser) as $advertiser_id) {
+            $advertiser_usage[$advertiser_id] = 0;
         }
         
-        if (count($selected_products) < $slots_available && count($advertiser_usage) < count($advertiser_ids)) {
-            $this->log_message("Second pass to fill remaining slots");
+        // Distribute slots evenly across advertisers
+        $slots_to_fill = min($slots_available, count($eligible_products));
+        $advertiser_ids = array_keys($products_by_advertiser);
+        $num_advertisers = count($advertiser_ids);
+        
+        $this->log_message("Distributing {$slots_to_fill} slots across {$num_advertisers} advertisers");
+        
+        // Round-robin selection to ensure diversity
+        $round = 0;
+        while (count($selected_products) < $slots_to_fill) {
+            $products_added_this_round = 0;
             
-            // Get the advertisers we haven't used yet
-            $unused_advertisers = array_diff($advertiser_ids, array_keys($advertiser_usage));
+            // Shuffle advertiser order each round for fairness
+            shuffle($advertiser_ids);
             
-            foreach ($unused_advertisers as $advertiser_id) {
-                // Stop if we've reached the slots limit
-                if (count($selected_products) >= $slots_available) {
+            foreach ($advertiser_ids as $advertiser_id) {
+                if (count($selected_products) >= $slots_to_fill) {
                     break;
                 }
                 
+                // Check if this advertiser has products left
                 $advertiser_products = $products_by_advertiser[$advertiser_id];
+                $products_used = $advertiser_usage[$advertiser_id];
                 
-                // Sort by discount (highest first)
-                usort($advertiser_products, function($a, $b) {
-                    $discount_a = $this->post_creator->calculate_discount($a['price'], $a['sale_price']);
-                    $discount_b = $this->post_creator->calculate_discount($b['price'], $b['sale_price']);
-                    return $discount_b - $discount_a;
-                });
-                
-                // Find an eligible product from this advertiser
-                foreach ($advertiser_products as $product) {
-                    // Generate unique identifier
-                    $variant_identifier = md5(
-                        $product['id'] . '|' . 
-                        (isset($product['gtin']) ? $product['gtin'] : '') . '|' . 
-                        (isset($product['mpn']) ? $product['mpn'] : '')
-                    );
-                    
-                    // Skip if already used
-                    if (in_array($variant_identifier, $existing_identifiers)) {
-                        continue;
-                    }
-                    
-                    // Skip if already in database
-                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
-                        continue;
-                    }
-                    
-                    // Add this product to the selection
-                    $selected_products[] = array(
-                        'product' => $product,
-                        'identifier' => $variant_identifier,
-                        'advertiser_id' => $advertiser_id
-                    );
-                    
-                    // Track that we used this advertiser
-                    if (!isset($advertiser_usage[$advertiser_id])) {
-                        $advertiser_usage[$advertiser_id] = 0;
-                    }
+                if ($products_used < count($advertiser_products)) {
+                    // Take the next best product from this advertiser
+                    $selected_products[] = $advertiser_products[$products_used];
                     $advertiser_usage[$advertiser_id]++;
+                    $products_added_this_round++;
                     
-                    $this->log_message("Selected product ID: {$product['id']} from advertiser: {$advertiser_id} (second pass)");
-                    
-                    // Only take one product per advertiser
-                    break;
+                    $this->log_message("Round {$round}: Selected product from advertiser {$advertiser_id} (usage: " . $advertiser_usage[$advertiser_id] . "/" . count($advertiser_products) . ")");
                 }
             }
+            
+            // If no products were added this round, we've exhausted all options
+            if ($products_added_this_round == 0) {
+                $this->log_message("No more products available from any advertiser");
+                break;
+            }
+            
+            $round++;
         }
         
-        $selected_count = count($selected_products);
-        $this->log_message("Selected " . $selected_count . " products for scheduling");
+        // Log final advertiser distribution
+        $this->log_message("=== Final Advertiser Distribution ===");
+        foreach ($advertiser_usage as $advertiser_id => $count) {
+            if ($count > 0) {
+                $this->log_message("Advertiser {$advertiser_id}: {$count} products selected");
+            }
+        }
+        $this->log_message("Total products selected: " . count($selected_products));
         
-        if ($selected_count == 0) {
-            $this->log_message("No eligible products found to schedule. Exiting.");
+        if (empty($selected_products)) {
+            $this->log_message("No products selected after diversity distribution");
             return;
         }
         
+        // Calculate scheduling parameters
         $end_of_day = clone $now;
         $end_of_day->setTime(23, 0, 0);
         $remaining_minutes = ($end_of_day->getTimestamp() - $now->getTimestamp()) / 60;
         
         // Calculate interval between posts - minimum 30 minutes, maximum 120 minutes
-        $interval_minutes = max(30, min(120, floor($remaining_minutes / $selected_count)));
+        $interval_minutes = max(30, min(120, floor($remaining_minutes / count($selected_products))));
         
-        $this->log_message("Scheduling {$selected_count} posts with interval of {$interval_minutes} minutes");
+        $this->log_message("Scheduling " . count($selected_products) . " posts with interval of {$interval_minutes} minutes");
         
         // Get initial scheduling time
         $next_time = $this->calculate_next_publish_time();
@@ -1281,10 +1252,15 @@ public function handle_dripfeed_publish() {
             $this->log_message("Could not determine ideal next publish time - using {$next_time->format('Y-m-d H:i:s')}");
         }
         
-        // Track identifiers that were successfully used
-        $used_identifiers = array();
+        // Get advertisers data
         $advertisers = $this->api_fetcher->fetch_advertisers();
+        
+        // Track successfully scheduled products
+        $used_identifiers = array();
         $scheduled_count = 0;
+        
+        // Shuffle selected products to mix up the order
+        shuffle($selected_products);
         
         foreach ($selected_products as $item) {
             $product = $item['product'];
@@ -1306,7 +1282,7 @@ public function handle_dripfeed_publish() {
             
             if ($post_id && !is_wp_error($post_id)) {
                 $scheduled_count++;
-                $this->log_message("Scheduled post ID: {$post_id} for {$next_time->format('Y-m-d H:i:s')}");
+                $this->log_message("Scheduled post ID: {$post_id} for {$next_time->format('Y-m-d H:i:s')} (Advertiser: {$advertiser_id})");
                 
                 // Track that we've used this identifier
                 $used_identifiers[] = $identifier;
@@ -1321,7 +1297,7 @@ public function handle_dripfeed_publish() {
                     break;
                 }
             } else {
-                $this->log_message("Failed to schedule post for product ID: {$product['id']}");
+                $this->log_message("Failed to schedule post for product ID: {$product['id']} (Advertiser: {$advertiser_id})");
             }
         }
         
@@ -1333,33 +1309,13 @@ public function handle_dripfeed_publish() {
         
         $this->log_message("Successfully scheduled {$scheduled_count} posts");
         
-        // If we have more slots and it's still within schedule hours, add remaining products to queue for later
-        $remaining_slots = $slots_available - $scheduled_count;
-        if ($remaining_slots > 0 && $next_time->format('H') < 23) {
-            $this->log_message("Still have {$remaining_slots} slots available. Adding remaining products to queue.");
-            
-            // Add remaining products to the queue for later processing
-            $remaining_products = array_slice($selected_products, $scheduled_count);
-            $added_count = 0;
-            
-            foreach ($remaining_products as $item) {
-                if (!in_array($item['identifier'], $used_identifiers)) {
-                    $added = $this->queue_manager->add_to_queue($item['product']);
-                    if ($added) {
-                        $added_count++;
-                    }
-                }
-            }
-            
-            $this->log_message("Added {$added_count} products to queue for later processing");
-            
-            // Schedule next dripfeed to process queue
-            if ($added_count > 0) {
-                wp_clear_scheduled_hook('pfa_dripfeed_publisher');
-                wp_schedule_single_event($next_time->getTimestamp(), 'pfa_dripfeed_publisher');
-                $this->log_message("Scheduled next dripfeed for: " . $next_time->format('Y-m-d H:i:s T'));
-            }
-        } else if ($scheduled_count < $max_posts) {
+        // Schedule next check based on results
+        if ($scheduled_count < $max_posts && $next_time->format('H') < 23) {
+            // Schedule next dripfeed to check for more products
+            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+            wp_schedule_single_event($next_time->getTimestamp(), 'pfa_dripfeed_publisher');
+            $this->log_message("Scheduled next dripfeed for: " . $next_time->format('Y-m-d H:i:s T'));
+        } else {
             // Schedule for tomorrow at 6 AM
             $tomorrow = new DateTime('tomorrow 06:00:00', $timezone);
             wp_clear_scheduled_hook('pfa_dripfeed_publisher');

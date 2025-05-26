@@ -346,3 +346,110 @@ function pfa_check_version_and_restart() {
         pfa_force_restart_all_schedules();
     }
 }
+
+function pfa_force_immediate_run_once() {
+    // Only run on our plugin's admin page
+    if (!isset($_GET['page']) || $_GET['page'] !== 'product_feed_automation') {
+        return;
+    }
+    
+    // Check if we've already run in the last hour
+    $last_force_run = get_transient('pfa_last_force_run');
+    if ($last_force_run) {
+        return;
+    }
+    
+    // Set transient to prevent multiple runs
+    set_transient('pfa_last_force_run', time(), HOUR_IN_SECONDS);
+    
+    // Check if we have the force_run parameter
+    if (isset($_GET['force_run']) && $_GET['force_run'] === 'true') {
+        error_log('[PFA] ===== FORCING IMMEDIATE RUN =====');
+        
+        // Clear all caches and locks
+        delete_transient('pfa_dripfeed_lock');
+        delete_transient('pfa_queue_status_cache');
+        delete_transient('pfa_product_queue');
+        delete_option('pfa_product_queue_backup');
+        
+        // Get scheduler instance
+        $scheduler = PFA_Post_Scheduler::get_instance();
+        
+        // Clear existing schedules
+        wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+        wp_clear_scheduled_hook('pfa_daily_check');
+        
+        // Run check_and_queue_products immediately
+        error_log('[PFA] Running check_and_queue_products immediately...');
+        $scheduler->check_and_queue_products();
+        
+        // Schedule next dripfeed in 5 minutes
+        wp_schedule_single_event(time() + 300, 'pfa_dripfeed_publisher');
+        
+        // Redirect to remove the force_run parameter
+        wp_redirect(admin_url('options-general.php?page=product_feed_automation&forced=true'));
+        exit;
+    }
+    
+    // Show success message if we just forced a run
+    if (isset($_GET['forced']) && $_GET['forced'] === 'true') {
+        add_action('admin_notices', function() {
+            echo '<div class="notice notice-success is-dismissible">';
+            echo '<p><strong>Product Feed Automation:</strong> Forced immediate run completed. Check the logs for details.</p>';
+            echo '</div>';
+        });
+    }
+}
+
+// Add a button to the admin interface to force immediate run
+add_action('admin_footer', 'pfa_add_force_run_button');
+
+function pfa_add_force_run_button() {
+    if (!isset($_GET['page']) || $_GET['page'] !== 'product_feed_automation') {
+        return;
+    }
+    ?>
+    <script>
+    jQuery(document).ready(function($) {
+        // Add force run button after the refresh button
+        var forceRunBtn = '<button type="button" id="force-immediate-run" class="button button-primary" style="margin-left: 10px;">Force Immediate Run</button>';
+        $('#refresh-queue-status').after(forceRunBtn);
+        
+        $('#force-immediate-run').on('click', function() {
+            if (confirm('This will force an immediate check and scheduling of products. Continue?')) {
+                window.location.href = window.location.href + '&force_run=true';
+            }
+        });
+    });
+    </script>
+    <?php
+}
+
+/**
+ * Alternative: Direct execution via WP-CLI or direct URL
+ * Visit: /wp-admin/admin.php?page=product_feed_automation&pfa_force_execute=true
+ */
+add_action('init', 'pfa_check_force_execute');
+
+function pfa_check_force_execute() {
+    if (!is_admin() || !current_user_can('manage_options')) {
+        return;
+    }
+    
+    if (isset($_GET['pfa_force_execute']) && $_GET['pfa_force_execute'] === 'true') {
+        error_log('[PFA] ===== FORCE EXECUTE TRIGGERED =====');
+        
+        // Clear all blocks
+        delete_transient('pfa_dripfeed_lock');
+        delete_transient('pfa_queue_status_cache');
+        
+        // Get scheduler
+        $scheduler = PFA_Post_Scheduler::get_instance();
+        
+        // Run immediately
+        $scheduler->check_and_queue_products();
+        
+        // Show result
+        wp_die('Force execution completed. Check the error logs for details. <a href="' . admin_url('options-general.php?page=product_feed_automation') . '">Return to plugin settings</a>');
+    }
+}
