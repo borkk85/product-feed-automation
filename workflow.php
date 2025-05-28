@@ -347,20 +347,17 @@ function pfa_check_version_and_restart() {
     }
 }
 
+add_action('admin_init', 'pfa_force_immediate_run_once');
+
 function pfa_force_immediate_run_once() {
     // Only run on our plugin's admin page
+    if (!is_admin() || !current_user_can('manage_options')) {
+        return;
+    }
+    
     if (!isset($_GET['page']) || $_GET['page'] !== 'product_feed_automation') {
         return;
     }
-    
-    // Check if we've already run in the last hour
-    $last_force_run = get_transient('pfa_last_force_run');
-    if ($last_force_run) {
-        return;
-    }
-    
-    // Set transient to prevent multiple runs
-    set_transient('pfa_last_force_run', time(), HOUR_IN_SECONDS);
     
     // Check if we have the force_run parameter
     if (isset($_GET['force_run']) && $_GET['force_run'] === 'true') {
@@ -372,19 +369,48 @@ function pfa_force_immediate_run_once() {
         delete_transient('pfa_product_queue');
         delete_option('pfa_product_queue_backup');
         
-        // Get scheduler instance
-        $scheduler = PFA_Post_Scheduler::get_instance();
-        
-        // Clear existing schedules
-        wp_clear_scheduled_hook('pfa_dripfeed_publisher');
-        wp_clear_scheduled_hook('pfa_daily_check');
-        
-        // Run check_and_queue_products immediately
-        error_log('[PFA] Running check_and_queue_products immediately...');
-        $scheduler->check_and_queue_products();
-        
-        // Schedule next dripfeed in 5 minutes
-        wp_schedule_single_event(time() + 300, 'pfa_dripfeed_publisher');
+        // FIXED: Get scheduler instance properly and force execution
+        try {
+            error_log('[PFA] Getting scheduler instance...');
+            $scheduler = PFA_Post_Scheduler::get_instance();
+            
+            if (!$scheduler) {
+                error_log('[PFA] ERROR: Could not get scheduler instance');
+                wp_die('Error: Could not get scheduler instance');
+            }
+            
+            error_log('[PFA] Scheduler instance retrieved successfully');
+            
+            // Clear existing schedules
+            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+            wp_clear_scheduled_hook('pfa_daily_check');
+            
+            // FIXED: Force the method to run by calling it directly with error handling
+            error_log('[PFA] Calling check_and_queue_products...');
+            
+            // Make sure automation is enabled
+            update_option('pfa_automation_enabled', 'yes');
+            
+            // Call the method with proper error handling
+            ob_start();
+            $result = $scheduler->check_and_queue_products();
+            $output = ob_get_clean();
+            
+            if ($output) {
+                error_log('[PFA] Method output: ' . $output);
+            }
+            
+            error_log('[PFA] check_and_queue_products completed');
+            
+            // Schedule next dripfeed in 5 minutes as backup
+            wp_schedule_single_event(time() + 300, 'pfa_dripfeed_publisher');
+            
+            error_log('[PFA] Force run completed successfully');
+            
+        } catch (Exception $e) {
+            error_log('[PFA] ERROR during force run: ' . $e->getMessage());
+            error_log('[PFA] Stack trace: ' . $e->getTraceAsString());
+        }
         
         // Redirect to remove the force_run parameter
         wp_redirect(admin_url('options-general.php?page=product_feed_automation&forced=true'));
@@ -427,9 +453,9 @@ function pfa_add_force_run_button() {
 
 /**
  * Alternative: Direct execution via WP-CLI or direct URL
- * Visit: /wp-admin/admin.php?page=product_feed_automation&pfa_force_execute=true
+ * Visit: /wp-admin/options-general.php?page=product_feed_automation&pfa_force_execute=true
  */
-add_action('init', 'pfa_check_force_execute');
+add_action('admin_init', 'pfa_check_force_execute');
 
 function pfa_check_force_execute() {
     if (!is_admin() || !current_user_can('manage_options')) {
