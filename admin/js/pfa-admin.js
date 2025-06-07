@@ -397,105 +397,218 @@
         
             $button
                 .prop("disabled", true)
-                .html(
-                    '<span class="dashicons dashicons-update pfa-spinning"></span> Checking...'
-                );
+                .html('<span class="dashicons dashicons-update pfa-spinning"></span> Checking... 0%');
+                // .html(
+                //     '<span class="dashicons dashicons-update pfa-spinning"></span> Checking...'
+                // );
         
             $.ajax({
                 url: pfaData.ajaxurl,
                 type: "POST",
                 data: {
-                    action: "pfa_check_discount_results",
+                    // action: "pfa_check_discount_results",
+                    action: "pfa_start_discount_check",
                     min_discount: minDiscount,
                     nonce: pfaData.nonce
                 },
                 success: function(response) {
-                    console.log("Discount check response:", response);
-                    const $message = $("<div>")
-                        .addClass("pfa-discount-check-message notice")
-                        .css({
-                            "margin-top": "10px",
-                            padding: "10px 15px",
-                            "border-left-width": "4px"
-                        });
+                    // console.log("Discount check response:", response);
+                    // const $message = $("<div>")
+                    //     .addClass("pfa-discount-check-message notice")
+                    //     .css({
+                    //         "margin-top": "10px",
+                    //         padding: "10px 15px",
+                    //         "border-left-width": "4px"
+                    //     });
         
-                    if (response.success) {
-                        let messageContent = `
-                            <p>
-                                <strong>Discount Check Results:</strong><br>
-                                • Found ${response.data.total_hits} in-stock products with ${response.data.min_discount}%+ discount<br>
-                                • Out of ${response.data.in_stock_count} available products (${response.data.total_products} total)<br>
-                                • Next scheduled check: ${response.data.next_scheduled_check}
-                            </p>
-                        `;
+                    // if (response.success) {
+                    //     let messageContent = `
+                    //         <p>
+                    //             <strong>Discount Check Results:</strong><br>
+                    //             • Found ${response.data.total_hits} in-stock products with ${response.data.min_discount}%+ discount<br>
+                    //             • Out of ${response.data.in_stock_count} available products (${response.data.total_products} total)<br>
+                    //             • Next scheduled check: ${response.data.next_scheduled_check}
+                    //         </p>
+                    //     `;
         
-                        if (response.data.sample_products?.length > 0) {
-                            messageContent += `
-                                <p><strong>Top Discounted Products:</strong></p>
-                                <ul style="list-style-type: disc; margin-left: 20px;">
-                                    ${response.data.sample_products
-                                        .map(
-                                            (product) => `
-                                            <li>
-                                                ${product.title}<br>
-                                                <small>
-                                                    Original: ${product.original_price} | 
-                                                    Sale: ${product.sale_price} | 
-                                                    Discount: ${product.discount}
-                                                </small>
-                                            </li>
-                                        `
-                                        )
-                                        .join("")}
-                                </ul>
-                            `;
-                        }
+                    //     if (response.data.sample_products?.length > 0) {
+                    //         messageContent += `
+                    //             <p><strong>Top Discounted Products:</strong></p>
+                    //             <ul style="list-style-type: disc; margin-left: 20px;">
+                    //                 ${response.data.sample_products
+                    //                     .map(
+                    //                         (product) => `
+                    //                         <li>
+                    //                             ${product.title}<br>
+                    //                             <small>
+                    //                                 Original: ${product.original_price} | 
+                    //                                 Sale: ${product.sale_price} | 
+                    //                                 Discount: ${product.discount}
+                    //                             </small>
+                    //                         </li>
+                    //                     `
+                    //                     )
+                    //                     .join("")}
+                    //             </ul>
+                    //         `;
+                    //     }
                         
-                        messageContent += `
-                            <p>
-                                <button type="button" class="button button-primary apply-discount-setting">
-                                    Apply This Discount Setting
-                                </button>
-                            </p>
-                        `;
+                    //     messageContent += `
+                    //         <p>
+                    //             <button type="button" class="button button-primary apply-discount-setting">
+                    //                 Apply This Discount Setting
+                    //             </button>
+                    //         </p>
+                    //     `;
         
-                        $message.addClass("notice-success").html(messageContent).show();
+                    //     $message.addClass("notice-success").html(messageContent).show();
                         
-                        // Add handler for Apply button
-                        $message.find('.apply-discount-setting').on('click', function() {
-                            $("#submit_settings").click();
-                        });
-                        
+                    //     // Add handler for Apply button
+                    //     $message.find('.apply-discount-setting').on('click', function() {
+                    //         $("#submit_settings").click();
+                    //     });
+                    if (response.success && response.data.job_id) {
+                        pollDiscountCheck(response.data.job_id, $button);
                     } else {
-                        $message
-                            .addClass("notice-error")
-                            .html(
-                                `<p>Error: ${
-                                    response.data.message || "Unknown error occurred"
-                                }</p>`
-                            );
+                        // $message
+                        //     .addClass("notice-error")
+                        //     .html(
+                        //         `<p>Error: ${
+                        //             response.data.message || "Unknown error occurred"
+                        //         }</p>`
+                        //     );
+                             displayDiscountError(response.data?.message || "Unknown error", $button);
                     }
         
                     $message.insertAfter($button.closest("tr")).show();
                 },
                 error: function(xhr, status, error) {
-                    console.error("Discount check error:", xhr, status, error);
-                    const $message = $("<div>")
-                        .addClass("pfa-discount-check-message notice notice-error")
-                        .css({
-                            "margin-top": "10px",
-                            padding: "10px 15px"
-                        })
-                        .html(`<p>Server error occurred: ${error}</p>`)
-                        .insertAfter($button.closest("tr"))
-                        .show();
-                },
-                complete: function() {
-                    $button.prop("disabled", false).html("Check Results");
-                }
+                //     console.error("Discount check error:", xhr, status, error);
+                //     const $message = $("<div>")
+                //         .addClass("pfa-discount-check-message notice notice-error")
+                //         .css({
+                //             "margin-top": "10px",
+                //             padding: "10px 15px"
+                //         })
+                //         .html(`<p>Server error occurred: ${error}</p>`)
+                //         .insertAfter($button.closest("tr"))
+                //         .show();
+                // },
+                // complete: function() {
+                //     $button.prop("disabled", false).html("Check Results");
+            displayDiscountError(error, $button);    
+            }
             });
         });
         
+function pollDiscountCheck(jobId, $button) {
+            const interval = setInterval(function() {
+                $.ajax({
+                    url: pfaData.ajaxurl,
+                    type: "GET",
+                    data: {
+                        action: "pfa_get_discount_check_progress",
+                        job_id: jobId,
+                        nonce: pfaData.nonce
+                    },
+                    success: function(response) {
+                        if (!response.success) {
+                            clearInterval(interval);
+                            displayDiscountError(response.data?.message || "Error", $button);
+                            return;
+                        }
+
+                        const data = response.data;
+
+                        if (data.status === "processing" || data.status === "queued") {
+                            $button.html(`<span class="dashicons dashicons-update pfa-spinning"></span> Checking... ${data.progress}%`);
+                        } else if (data.status === "complete") {
+                            clearInterval(interval);
+                            renderDiscountResults(data.result, $button);
+                            $button.prop("disabled", false).html("Check Results");
+                        } else if (data.status === "error") {
+                            clearInterval(interval);
+                            displayDiscountError(data.message || "Error", $button);
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        clearInterval(interval);
+                        displayDiscountError(error, $button);
+                    }
+                });
+            }, 3000);
+        }
+
+        function renderDiscountResults(data, $button) {
+            const $message = $("<div>")
+                .addClass("pfa-discount-check-message notice")
+                .css({
+                    "margin-top": "10px",
+                    padding: "10px 15px",
+                    "border-left-width": "4px"
+                });
+
+            let messageContent = `
+                <p>
+                    <strong>Discount Check Results:</strong><br>
+                    • Found ${data.total_hits} in-stock products with ${data.min_discount}%+ discount<br>
+                    • Out of ${data.in_stock_count} available products (${data.total_products} total)<br>
+                    • Next scheduled check: ${data.next_scheduled_check}
+                </p>
+            `;
+
+            if (data.sample_products?.length > 0) {
+                messageContent += `
+                    <p><strong>Top Discounted Products:</strong></p>
+                    <ul style="list-style-type: disc; margin-left: 20px;">
+                        ${data.sample_products
+                            .map(
+                                (product) => `
+                                <li>
+                                    ${product.title}<br>
+                                    <small>
+                                        Original: ${product.original_price} |
+                                        Sale: ${product.sale_price} |
+                                        Discount: ${product.discount}
+                                    </small>
+                                </li>
+                            `
+                            )
+                            .join("")}
+                    </ul>
+                `;
+            }
+
+            messageContent += `
+                <p>
+                    <button type="button" class="button button-primary apply-discount-setting">
+                        Apply This Discount Setting
+                    </button>
+                </p>
+            `;
+
+            $message.addClass("notice-success").html(messageContent).show();
+            $message.find('.apply-discount-setting').on('click', function() {
+                $("#submit_settings").click();
+            });
+
+            $message.insertAfter($button.closest("tr")).show();
+        }
+
+        function displayDiscountError(msg, $button) {
+            const $message = $("<div>")
+                .addClass("pfa-discount-check-message notice notice-error")
+                .css({
+                    "margin-top": "10px",
+                    padding: "10px 15px"
+                })
+                .html(`<p>Error: ${msg}</p>`)
+                .insertAfter($button.closest("tr"))
+                .show();
+
+            $button.prop("disabled", false).html("Check Results");
+        }
+
 
         /**
          * Settings Form Submission

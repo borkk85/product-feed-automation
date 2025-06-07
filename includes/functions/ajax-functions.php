@@ -52,30 +52,31 @@ function pfa_save_settings() {
     
     error_log('Save settings - old discount: ' . $old_min_discount . ', new: ' . $new_min_discount);
 
-    // Save API credentials
+    
     update_option('addrevenue_api_key', sanitize_text_field($_POST['addrevenue_api_key']));
     update_option('ai_api_key', sanitize_text_field($_POST['ai_api_key']));
     update_option('channel_id', sanitize_text_field($_POST['channel_id']));
     
-    // Save AI settings
+    
     update_option('ai_model', sanitize_text_field($_POST['ai_model']));
     update_option('max_tokens', sanitize_text_field($_POST['max_tokens']));
     update_option('temperature', sanitize_text_field($_POST['temperature']));
     update_option('prompt_for_ai', sanitize_textarea_field($_POST['prompt_for_ai']));
     
-    // Save automation settings
+    
     update_option('min_discount', $new_min_discount);
     update_option('max_posts_per_day', $new_max_posts);
     update_option('check_interval', sanitize_text_field($_POST['check_interval']));
     update_option('dripfeed_interval', sanitize_text_field($_POST['dripfeed_interval']));
 
-    // If discount value changed, update the last check results display data
+    
     if ($old_min_discount != $new_min_discount) {
         error_log('Discount value changed from ' . $old_min_discount . ' to ' . $new_min_discount . '. Updating last check display.');
         
-        // Try to estimate new values based on the last API fetch
+        
         $api_fetcher = PFA_API_Fetcher::get_instance();
-        $products = $api_fetcher->fetch_products(true);
+        // $products = $api_fetcher->fetch_products(true);
+        $products = $api_fetcher->fetch_products(true, $new_min_discount);
         
         if ($products) {
             // Apply new discount filter
@@ -113,6 +114,7 @@ function pfa_save_settings() {
 
     // Initialize new schedules
     $scheduler = PFA_Post_Scheduler::get_instance();
+    $scheduler->refresh_settings();
     $scheduler->initialize_schedules();
 
     // Force Queue Manager to refresh its status
@@ -241,30 +243,37 @@ add_action('wp_ajax_setup_schedules', 'pfa_reset_schedules');
  *
  * @since    1.0.0
  */
-function pfa_check_discount_results() {
-    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+// function pfa_check_discount_results() {
+//     check_ajax_referer('pfa_ajax_nonce', 'nonce');
     
-    if (!current_user_can('manage_options')) {
-        wp_send_json_error(array('message' => 'Insufficient permissions'));
-        return;
-    }
+//     if (!current_user_can('manage_options')) {
+//         wp_send_json_error(array('message' => 'Insufficient permissions'));
+//         return;
+//     }
     
+function pfa_check_discount_results($job_id, $min_discount = 0) {
     try {
-        $min_discount = isset($_POST['min_discount']) ? (int) sanitize_text_field($_POST['min_discount']) : 0;
-        
-        // Important: We are NOT saving this value as an option anymore
-        // This is just used for the check
-        
+        // $min_discount = isset($_POST['min_discount']) ? (int) sanitize_text_field($_POST['min_discount']) : 0;
+                
         $post_creator = PFA_Post_Creator::get_instance();
         $api_fetcher = PFA_API_Fetcher::get_instance();
-        
+        set_transient($job_id, array(
+            'status'   => 'processing',
+            'progress' => 0,
+        ), 5 * MINUTE_IN_SECONDS);
+
         // Set a time limit for the operation (5 minutes)
         set_time_limit(300);
         
-        $products = $api_fetcher->fetch_products(true);
+        // $products = $api_fetcher->fetch_products(true);
+        $products = $api_fetcher->fetch_products(true, $min_discount);
         
         if (empty($products)) {
-            wp_send_json_error(array('message' => 'No products available'));
+            // wp_send_json_error(array('message' => 'No products available'));
+            set_transient($job_id, array(
+                'status'  => 'error',
+                'message' => 'No products available',
+            ), 5 * MINUTE_IN_SECONDS);
             return;
         }
 
@@ -335,6 +344,12 @@ function pfa_check_discount_results() {
             
             $processed_count += count($batch);
             
+            $progress = ($total_products > 0) ? round(($processed_count / $total_products) * 100) : 100;
+            set_transient($job_id, array(
+                'status'   => 'processing',
+                'progress' => min(99, $progress),
+            ), 5 * MINUTE_IN_SECONDS);
+
             // Reset max execution time for each batch to prevent timeout
             set_time_limit(30);
         }
@@ -366,15 +381,81 @@ function pfa_check_discount_results() {
             'sample_products' => $sample_products
         );
         
-        wp_send_json_success($results);
+        // wp_send_json_success($results);
+        set_transient($job_id, array(
+            'status'   => 'complete',
+            'progress' => 100,
+            'result'   => $results,
+        ), 5 * MINUTE_IN_SECONDS);
 
     } catch (Exception $e) {
-        wp_send_json_error(array(
-            'message' => 'Server error occurred: ' . $e->getMessage()
-        ));
+        // wp_send_json_error(array(
+        //     'message' => 'Server error occurred: ' . $e->getMessage()
+        // ));
+        set_transient($job_id, array(
+            'status'  => 'error',
+            'message' => $e->getMessage(),
+        ), 5 * MINUTE_IN_SECONDS);
     }
 }
-add_action('wp_ajax_pfa_check_discount_results', 'pfa_check_discount_results');
+// add_action('wp_ajax_pfa_check_discount_results', 'pfa_check_discount_results');
+
+/**
+ * Start discount check job and return a job ID.
+ *
+ * @since 1.0.0
+ */
+function pfa_start_discount_check() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+
+    $min_discount = isset($_POST['min_discount']) ? (int) sanitize_text_field($_POST['min_discount']) : 0;
+
+    $job_id = uniqid('pfa_discount_check_', true);
+
+    set_transient($job_id, array(
+        'status'   => 'queued',
+        'progress' => 0,
+    ), 5 * MINUTE_IN_SECONDS);
+
+    wp_schedule_single_event(time() + 1, 'pfa_run_discount_check', array($job_id, $min_discount));
+
+    wp_send_json_success(array('job_id' => $job_id));
+}
+add_action('wp_ajax_pfa_start_discount_check', 'pfa_start_discount_check');
+
+/**
+ * Get discount check progress.
+ *
+ * @since 1.0.0
+ */
+function pfa_get_discount_check_progress() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+
+    $job_id = isset($_GET['job_id']) ? sanitize_text_field($_GET['job_id']) : sanitize_text_field($_POST['job_id']);
+    $data   = get_transient($job_id);
+
+    if (false === $data) {
+        wp_send_json_error(array('message' => 'Job not found'));
+        return;
+    }
+
+    wp_send_json_success($data);
+}
+add_action('wp_ajax_pfa_get_discount_check_progress', 'pfa_get_discount_check_progress');
+
+// Cron hook to run the discount check job.
+add_action('pfa_run_discount_check', 'pfa_check_discount_results', 10, 2);
+
 
 /**
  * Refresh queue status.

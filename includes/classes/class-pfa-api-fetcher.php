@@ -139,7 +139,7 @@ class PFA_API_Fetcher {
      * @param    boolean    $force_fetch    Whether to force refresh the cache.
      * @return   array|false                Array of products or false on failure.
      */
-    public function fetch_products($force_fetch = false) {
+    public function fetch_products($force_fetch = false, $override_discount = null) {
         $this->log_message('=== Starting Product Fetch ===');
         $this->log_message('Force fetch: ' . ($force_fetch ? 'true' : 'false'));
         
@@ -160,8 +160,9 @@ class PFA_API_Fetcher {
         
             $api_key = get_option('addrevenue_api_key');
             $channel_id = get_option('channel_id');
-            $min_discount = get_option('min_discount', 0); 
-            $limit = 200; // Fetch up to 200 products per page
+            // $min_discount = get_option('min_discount', 0); 
+            $min_discount = isset($override_discount) ? (int) $override_discount : get_option('min_discount', 0);
+            $limit = 200; 
             $all_products = array();
             $offset = 0; // Start with offset 0
             $total_count = null; // Initialize total_count to be fetched on the first API call

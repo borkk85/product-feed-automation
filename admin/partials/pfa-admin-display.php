@@ -29,11 +29,7 @@ $prompt_for_ai = get_option('prompt_for_ai', 'Write a product description for');
 $check_interval = get_option('check_interval', 'daily');
 $dripfeed_interval = get_option('dripfeed_interval', 60);
 $automation_enabled = get_option('pfa_automation_enabled', 'yes');
-$posts_today = isset($status_data['posts_today']) ? $status_data['posts_today'] : 0;
-$scheduled_posts = isset($status_data['scheduled_posts']) ? $status_data['scheduled_posts'] : 0;
-$max_posts = get_option('max_posts_per_day', 10);
-$total_planned = $posts_today + $scheduled_posts;
-$show_setup_button = ($total_planned < $max_posts) || (!wp_next_scheduled('pfa_api_check') || !wp_next_scheduled('pfa_dripfeed_publisher'));
+
 // Get queue status data
 $queue_manager = PFA_Queue_Manager::get_instance();
 $status_data = $queue_manager->get_status(true);
@@ -93,9 +89,6 @@ $status_data = $queue_manager->get_status(true);
                                         <?php echo isset($status_data['queue_size']) ? esc_html($status_data['queue_size']) : '0'; ?>
                                     </span>
                                 </p>
-                                <button type="button" id="debug-schedules" class="button">
-                                    <?php _e('Debug Schedules', 'product-feed-automation'); ?>
-                                </button>
                             </div>
 
                             <div class="pfa-api-status">
@@ -158,15 +151,10 @@ $status_data = $queue_manager->get_status(true);
                             <button type="button" id="refresh-queue-status" class="button">
                                 <?php _e('Refresh Status', 'product-feed-automation'); ?>
                             </button>
-                            <?php if ($show_setup_button) : ?>
-                                <button type="button" id="setup-schedules" class="button button-primary">
+                            <?php if (!wp_next_scheduled('pfa_api_check') || !wp_next_scheduled('pfa_dripfeed_publisher')) : ?>
+                                <button type="button" id="setup-schedules" class="button">
                                     <?php _e('Setup Schedules', 'product-feed-automation'); ?>
                                 </button>
-                                <?php if ($total_planned < $max_posts) : ?>
-                                    <p class="description" style="margin-top: 10px; color: #d63638;">
-                                        <?php printf(__('Only %d/%d posts planned for today. Click "Setup Schedules" to schedule more posts.', 'product-feed-automation'), $total_planned, $max_posts); ?>
-                                    </p>
-                                <?php endif; ?>
                             <?php endif; ?>
                         </div>
                     </div>
@@ -178,7 +166,7 @@ $status_data = $queue_manager->get_status(true);
 
                     <div id="pfa-manual-post-message" class="notice" style="display: none;"></div>
 
-                    <form method="post" id="pfa-manual-post-form" action="">
+                   <form method="post" id="pfa-manual-post-form" action="">
                         <table class="form-table">
                             <tr>
                                 <th scope="row"><label for="post_title"><?php _e('Post Title', 'product-feed-automation'); ?></label></th>
@@ -272,9 +260,9 @@ $status_data = $queue_manager->get_status(true);
                                 <th scope="row"><label for="ai_model"><?php _e('AI Model', 'product-feed-automation'); ?></label></th>
                                 <td>
                                     <select id="ai_model" name="ai_model">
-                                        <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
-                                        <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
-                                        <option value="gpt-4o-mini" <?php selected($ai_model, 'gpt-4o-mini'); ?>><?php _e('GPT-4o Mini', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
+                                    <option value="gpt-4o-mini" <?php selected($ai_model, 'gpt-4o-mini'); ?>><?php _e('GPT-4o Mini', 'product-feed-automation'); ?></option>
                                     </select>
                                 </td>
                             </tr>
