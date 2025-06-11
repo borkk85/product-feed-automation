@@ -1237,8 +1237,8 @@ class PFA_Post_Scheduler
     public function add_custom_schedules($schedules)
     {
         $interval = max(30, (int)$this->dripfeed_interval);
-        // $key = 'every_' . $interval . '_minutes';
-        $key = "minutes_{$interval}";
+        $key = 'every_' . $interval . '_minutes';
+
         if (!isset($schedules[$key])) {
             $schedules[$key] = array(
                 'interval' => $interval * 60,

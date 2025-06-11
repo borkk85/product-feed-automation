@@ -248,8 +248,8 @@ class PFA_Post_Creator {
                     $this->log_message("Post {$post_id} is scheduled for publication at {$post->post_date}");
                     
                     // Verify future post queue
-                    // wp_publish_post($post_id);
-                    // wp_transition_post_status('future', 'publish', $post);
+                    wp_publish_post($post_id);
+                    wp_transition_post_status('future', 'publish', $post);
                     
                     // Set it back to future with fresh dates
                     if (isset($schedule_data['post_date'])) {
