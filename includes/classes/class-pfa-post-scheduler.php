@@ -254,11 +254,11 @@ class PFA_Post_Scheduler
 
         try {
             // Get categories
-            $active_cat = get_term_by('slug', 'deals', 'category');
+            $active_cat = get_term_by('slug', 'active-deals', 'category');
             $archive_cat = get_term_by('slug', 'archived-deals', 'category');
 
             if (!$active_cat || !$archive_cat) {
-                $this->log_message('Required categories not found - deals and/or archive-deals');
+                $this->log_message('Required categories not found - active deals and/or archive-deals');
                 return;
             }
 
@@ -1237,8 +1237,8 @@ class PFA_Post_Scheduler
     public function add_custom_schedules($schedules)
     {
         $interval = max(30, (int)$this->dripfeed_interval);
-        $key = 'every_' . $interval . '_minutes';
-
+        // $key = 'every_' . $interval . '_minutes';
+        $key = "minutes_{$interval}";
         if (!isset($schedules[$key])) {
             $schedules[$key] = array(
                 'interval' => $interval * 60,

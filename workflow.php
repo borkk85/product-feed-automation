@@ -94,19 +94,42 @@ class Product_Feed_Automation {
         $initialized = true;
         
         $dripfeed_interval = get_option('dripfeed_interval', 30);
-        
-        if (!wp_next_scheduled('pfa_daily_check') && 
-            !wp_next_scheduled('pfa_dripfeed_publisher') && 
-            !wp_next_scheduled('pfa_api_check')) {
+        $check_interval    = get_option('check_interval', 'daily');
+
+        // Always clear existing hooks to ensure fresh schedules
+        wp_clear_scheduled_hook('pfa_daily_check');
+        wp_clear_scheduled_hook('pfa_api_check');
+        wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+
+
+        // if (!wp_next_scheduled('pfa_daily_check') && 
+        //     !wp_next_scheduled('pfa_dripfeed_publisher') && 
+        //     !wp_next_scheduled('pfa_api_check')) {
             
-            wp_clear_scheduled_hook('pfa_daily_check');
-            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
-            wp_clear_scheduled_hook('pfa_api_check');
+        //     wp_clear_scheduled_hook('pfa_daily_check');
+        //     wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+        //     wp_clear_scheduled_hook('pfa_api_check');
             
+        //     wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
+            
+        //     $check_interval = get_option('check_interval', 'daily');
+        //     wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+        //     wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
+        // }
+
+        if (!wp_next_scheduled('pfa_daily_check')) {
             wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
             
-            $check_interval = get_option('check_interval', 'daily');
+            // $check_interval = get_option('check_interval', 'daily');
+        }
+
+        // API check
+        if (!wp_next_scheduled('pfa_api_check')) {
             wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+        }
+
+        // Dripfeed publisher
+        if (!wp_next_scheduled('pfa_dripfeed_publisher')) {
             wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
         }
         
@@ -120,8 +143,10 @@ class Product_Feed_Automation {
 
         // Add additional functionality from init.php
         add_action('pre_get_posts', function($query) {
-            if (!is_admin()) {
-                $query->set('post_status', 'publish'); 
+            // if (!is_admin()) {
+            //     $query->set('post_status', 'publish'); 
+            if (!is_admin() && !(defined('DOING_CRON') && DOING_CRON)) {
+                $query->set('post_status', 'publish');
             }
         });
 
