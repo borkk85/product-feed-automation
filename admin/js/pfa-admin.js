@@ -731,6 +731,39 @@ function pollDiscountCheck(jobId, $button) {
         refreshQueueStatus();
     });
 
+    /**
+         * Migrate product ID metadata
+         */
+        $("#migrate-product-ids").on("click", function() {
+            var $button = $(this);
+            $button.prop("disabled", true).text("Migrating...");
+
+            $.ajax({
+                url: pfaData.ajaxurl,
+                type: "POST",
+                data: {
+                    action: "pfa_migrate_product_ids",
+                    nonce: pfaData.nonce
+                },
+                success: function(response) {
+                    if (response.success) {
+                        $button.text("Migration complete");
+                        setTimeout(function() {
+                            $button.remove();
+                        }, 1500);
+                    } else {
+                        alert("Migration failed: " + (response.data?.message || "Unknown error"));
+                        $button.prop("disabled", false).text("Migrate Product IDs");
+                    }
+                },
+                error: function() {
+                    alert("Server error during migration");
+                    $button.prop("disabled", false).text("Migrate Product IDs");
+                }
+            });
+        });
+
+
     $("#debug-schedules").on("click", function() {
     var $button = $(this);
     $button.prop("disabled", true).text("Checking...");

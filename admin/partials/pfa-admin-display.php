@@ -33,6 +33,22 @@ $automation_enabled = get_option('pfa_automation_enabled', 'yes');
 // Get queue status data
 $queue_manager = PFA_Queue_Manager::get_instance();
 $status_data = $queue_manager->get_status(true);
+
+// Determine if there are posts that need `_product_id` migration
+global $wpdb;
+$migration_pending = $wpdb->get_var(
+    $wpdb->prepare(
+        "SELECT COUNT(1)
+            FROM {$wpdb->posts} p
+            JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id AND pm1.meta_key = '_Amazone_produt_baseName'
+            LEFT JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id AND pm2.meta_key = '_product_id'
+            JOIN {$wpdb->postmeta} pm3 ON p.ID = pm3.post_id AND pm3.meta_key = %s
+            WHERE pm2.post_id IS NULL
+              AND p.post_type = 'post'
+              AND p.post_status NOT IN ('trash','auto-draft')",
+        '_pfa_v2_post'
+    )
+);
 ?>
 
 <div class="wrap pfa-admin-wrap">
@@ -154,6 +170,11 @@ $status_data = $queue_manager->get_status(true);
                             <?php if (!wp_next_scheduled('pfa_api_check') || !wp_next_scheduled('pfa_dripfeed_publisher')) : ?>
                                 <button type="button" id="setup-schedules" class="button">
                                     <?php _e('Setup Schedules', 'product-feed-automation'); ?>
+                                </button>
+                            <?php endif; ?>
+                            <?php if ($migration_pending > 0) : ?>
+                                <button type="button" id="migrate-product-ids" class="button">
+                                    <?php _e('Migrate Product IDs', 'product-feed-automation'); ?>
                                 </button>
                             <?php endif; ?>
                         </div>

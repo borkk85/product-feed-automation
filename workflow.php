@@ -2,7 +2,7 @@
 /*
 Plugin Name: Product Feed Automation 
 Description: Product Feed Automation Workflow & SEO blog content creation plugin with flexible API integration.
-Version: 1.0.0
+VersVersion: 1.0.1
 Author: borkk
 License: GPL2
 Text Domain: product-feed-automation
@@ -330,21 +330,4 @@ function pfa_force_restart_all_schedules() {
     // Force immediate run of dripfeed (after 1 minute to ensure everything is set up)
     wp_schedule_single_event(time() + 60, 'pfa_dripfeed_publisher');
 }
-
-/**
- * Check for version change and restart if needed.
- */
-function pfa_check_version_and_restart() {
-    $current_version = PFA_VERSION;
-    $stored_version = get_option('pfa_plugin_version', '0.0.0');
-    
-    if ($current_version !== $stored_version) {
-        // Store new version
-        update_option('pfa_plugin_version', $current_version);
-        
-        // Force restart
-        pfa_force_restart_all_schedules();
-    }
-}
-
 
