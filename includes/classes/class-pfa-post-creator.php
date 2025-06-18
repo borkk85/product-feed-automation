@@ -402,6 +402,7 @@ class PFA_Post_Creator
         }
 
         update_post_meta($post_id, '_Amazone_produt_baseName', $amazone_prod_basename);
+        update_post_meta($post_id, '_product_id', $amazone_prod_basename);
         update_post_meta($post_id, '_product_url', $product_url);
         update_post_meta($post_id, 'dynamic_amazone_link', $dynamic_esc_url);
         update_post_meta($post_id, 'dynamic_link', $dynamic_esc_url);
@@ -561,6 +562,8 @@ class PFA_Post_Creator
                     (pm.meta_key = '_product_url' AND (pm.meta_value = %s OR pm.meta_value = %s))
                     OR
                     (pm.meta_key = '_Amazone_produt_baseName' AND pm.meta_value = %s)
+                    R
+                    (pm.meta_key = '_product_id' AND pm.meta_value = %s)
                 )
                 AND p.post_type = 'post'
                 AND p.post_status NOT IN ('trash', 'auto-draft')
@@ -568,6 +571,7 @@ class PFA_Post_Creator
             self::POST_IDENTIFIER,
             $link,
             $actual_product_url,
+            $amazone_prod_basename,
             $amazone_prod_basename
         );
 
@@ -579,46 +583,6 @@ class PFA_Post_Creator
 
         $this->log_message('No existing post found');
         return false;
-    }
-
-    private function normalize_title($title)
-    {
-        // Convert to lowercase
-        $normalized = strtolower(trim($title));
-
-        // Remove common variations that BookOutlet adds
-        $patterns = array(
-            '/\s*—\s*classic\s*editor\s*$/i',
-            '/\s*-\s*classic\s*editor\s*$/i',
-            '/\s*classic\s*editor\s*$/i',
-            '/\s*\(.*?\)\s*$/i',  // Remove parentheses content at end
-            '/\s*\[.*?\]\s*$/i',  // Remove bracket content at end
-            '/\s*—\s*.*?edition\s*$/i',
-            '/\s*-\s*.*?edition\s*$/i',
-        );
-
-        foreach ($patterns as $pattern) {
-            $normalized = preg_replace($pattern, '', $normalized);
-        }
-
-        // Clean up multiple spaces
-        $normalized = preg_replace('/\s+/', ' ', trim($normalized));
-
-        return $normalized;
-    }
-
-    private function calculate_title_similarity($title1, $title2)
-    {
-        // Quick exact match
-        if ($title1 === $title2) {
-            return 100;
-        }
-
-        // Use similar_text for comparison
-        $similarity = 0;
-        similar_text($title1, $title2, $similarity);
-
-        return $similarity;
     }
 
     /**
@@ -633,6 +597,7 @@ class PFA_Post_Creator
 
         $meta_keys = array(
             '_Amazone_produt_baseName',
+            '_product_id',
             '_Amazone_produt_link',
             'dynamic_amazone_link',
             'dynamic_link',

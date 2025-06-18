@@ -339,7 +339,8 @@ class PFA_Post_Scheduler
                         'compare' => 'EXISTS',
                     ),
                     array(
-                        'key' => '_Amazone_produt_baseName',
+                        // 'key' => '_Amazone_produt_baseName',
+                        'key' => '_product_id',
                         'compare' => 'EXISTS',
                     )
                 )
@@ -350,7 +351,8 @@ class PFA_Post_Scheduler
 
             // Check active posts for archiving
             foreach ($active_posts as $post) {
-                $product_id = get_post_meta($post->ID, '_Amazone_produt_baseName', true);
+                // $product_id = get_post_meta($post->ID, '_Amazone_produt_baseName', true);
+                $product_id = get_post_meta($post->ID, '_product_id', true);
                 $checked_count++;
 
                 $should_archive = false;
@@ -403,7 +405,8 @@ class PFA_Post_Scheduler
                         'compare' => 'EXISTS',
                     ),
                     array(
-                        'key' => '_Amazone_produt_baseName',
+                        // 'key' => '_Amazone_produt_baseName',
+                        'key' => '_product_id',
                         'compare' => 'EXISTS',
                     )
                 )
@@ -412,7 +415,8 @@ class PFA_Post_Scheduler
             $reactivated_count = 0;
 
             foreach ($archived_posts as $post) {
-                $product_id = get_post_meta($post->ID, '_Amazone_produt_baseName', true);
+                // $product_id = get_post_meta($post->ID, '_Amazone_produt_baseName', true);
+                $product_id = get_post_meta($post->ID, '_product_id', true);
                 $this->log_message("Checking archived product ID: $product_id for reactivation");
 
                 if (isset($product_lookup[$product_id])) {
@@ -721,7 +725,9 @@ class PFA_Post_Scheduler
                 ));
 
                 // Check if all required meta is present
-                $required_meta = ['_pfa_v2_post', '_Amazone_produt_baseName', '_product_url', 'dynamic_amazone_link'];
+                // $required_meta = ['_pfa_v2_post', '_Amazone_produt_baseName', '_product_url', 'dynamic_amazone_link'];
+                $required_meta = ['_pfa_v2_post', '_product_id', '_product_url', 'dynamic_amazone_link'];
+
                 $missing = [];
 
                 foreach ($required_meta as $meta_key) {

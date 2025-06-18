@@ -302,7 +302,7 @@ function get_queue_status_data() {
 
 // Kick-start the plugin on version update
 register_activation_hook(__FILE__, 'pfa_force_restart_all_schedules');
-add_action('plugins_loaded', 'pfa_check_version_and_restart');
+// add_action('plugins_loaded', 'pfa_check_version_and_restart');
 
 /**
  * Force restart all schedules on activation.

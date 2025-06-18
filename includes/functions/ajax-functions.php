@@ -463,6 +463,20 @@ add_action('pfa_run_discount_check', 'pfa_check_discount_results', 10, 2);
  * @since    1.0.0
  */
 add_action('wp_ajax_pfa_refresh_status', 'pfa_refresh_status');
+function pfa_refresh_status() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+    
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+    
+    $queue_manager = PFA_Queue_Manager::get_instance();
+    $status = $queue_manager->get_status(true);
+    
+    wp_send_json_success($status);
+}
+add_action('wp_ajax_pfa_refresh_status', 'pfa_refresh_status');
 
 /**
  * Run migration to backfill `_product_id` meta for PFA posts.
@@ -483,17 +497,3 @@ function pfa_migrate_product_ids() {
     wp_send_json_success(array('message' => 'Migration complete'));
 }
 add_action('wp_ajax_pfa_migrate_product_ids', 'pfa_migrate_product_ids');
-// function pfa_refresh_status() {
-//     check_ajax_referer('pfa_ajax_nonce', 'nonce');
-    
-//     if (!current_user_can('manage_options')) {
-//         wp_send_json_error(array('message' => 'Insufficient permissions'));
-//         return;
-//     }
-    
-//     $queue_manager = PFA_Queue_Manager::get_instance();
-//     $status = $queue_manager->get_status(true);
-    
-//     wp_send_json_success($status);
-// }
-// add_action('wp_ajax_pfa_refresh_status', 'pfa_refresh_status');
