@@ -562,7 +562,7 @@ class PFA_Post_Creator
                     (pm.meta_key = '_product_url' AND (pm.meta_value = %s OR pm.meta_value = %s))
                     OR
                     (pm.meta_key = '_Amazone_produt_baseName' AND pm.meta_value = %s)
-                    R
+                    OR
                     (pm.meta_key = '_product_id' AND pm.meta_value = %s)
                 )
                 AND p.post_type = 'post'

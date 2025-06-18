@@ -386,7 +386,8 @@ class PFA_Queue_Manager {
             // Clear cache before getting fresh status
             $this->clear_status_cache();
             
-            $timezone = new DateTimeZone(wp_timezone_string());
+            // $timezone = new DateTimeZone(wp_timezone_string());
+            $timezone = wp_timezone();
             $now = new DateTime('now', $timezone);
             
             // Get automation status and check current hour
@@ -486,7 +487,8 @@ class PFA_Queue_Manager {
      * @return   int    Number of posts published today.
      */
     private function get_post_count_today() {
-        $timezone = new DateTimeZone(wp_timezone_string());
+        // $timezone = new DateTimeZone(wp_timezone_string());
+        $timezone = wp_timezone();
         $today = new DateTime('today', $timezone);
         
         $args = array(
@@ -600,7 +602,8 @@ class PFA_Queue_Manager {
         // Directly get the latest values from options to ensure freshness
         $this->log_message('Generating fresh status with direct option retrieval');
         
-        $wp_timezone = new DateTimeZone(wp_timezone_string());
+        // $wp_timezone = new DateTimeZone(wp_timezone_string());
+        $wp_timezone = wp_timezone();
         $current_time = new DateTime('now', $wp_timezone);
         $current_hour = (int)$current_time->format('G');
         

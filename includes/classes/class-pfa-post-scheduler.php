@@ -182,7 +182,8 @@ class PFA_Post_Scheduler
             }
 
             // Check for restricted hours (00:00-06:00)
-            $timezone = new DateTimeZone(wp_timezone_string());
+            // $timezone = new DateTimeZone(wp_timezone_string());
+            $timezone = wp_timezone();
             $current_time = new DateTime('now', $timezone);
             $hour = (int)$current_time->format('H');
 
@@ -581,7 +582,8 @@ class PFA_Post_Scheduler
      */
     private function calculate_next_publish_time()
     {
-        $timezone = new DateTimeZone(wp_timezone_string());
+        // $timezone = new DateTimeZone(wp_timezone_string());
+        $timezone = wp_timezone();
         $now = new DateTime('now', $timezone);
         $interval_minutes = max(1, (int)$this->dripfeed_interval);
 
@@ -743,7 +745,8 @@ class PFA_Post_Scheduler
         }
 
         // 5. Check posts created today that might be incorrectly counted
-        $timezone = new DateTimeZone(wp_timezone_string());
+        // $timezone = new DateTimeZone(wp_timezone_string());
+        $timezone = wp_timezone();
         $today_start = new DateTime('today', $timezone);
 
         $today_posts = $wpdb->get_results(
@@ -855,7 +858,8 @@ class PFA_Post_Scheduler
             $this->log_message("Currently scheduled posts: " . count($scheduled_posts));
 
             // Get timezone
-            $timezone = new DateTimeZone(wp_timezone_string());
+            // $timezone = new DateTimeZone(wp_timezone_string());
+            $timezone = wp_timezone();
             $now = new DateTime('now', $timezone);
             $current_hour = (int)$now->format('H');
             $current_minute = (int)$now->format('i');
@@ -1165,7 +1169,8 @@ class PFA_Post_Scheduler
         global $wpdb;
 
         // Get today's date in the site timezone
-        $timezone = new DateTimeZone(wp_timezone_string());
+        // $timezone = new DateTimeZone(wp_timezone_string());
+        $timezone = wp_timezone();
         $today = new DateTime('today', $timezone);
 
         $scheduled_posts = $wpdb->get_var(
@@ -1201,7 +1206,8 @@ class PFA_Post_Scheduler
      */
     public function get_post_count_today()
     {
-        $timezone = new DateTimeZone(wp_timezone_string());
+        // $timezone = new DateTimeZone(wp_timezone_string());
+        $timezone = wp_timezone();
         $today_start = new DateTime('today', $timezone);
         $today_end = clone $today_start;
         $today_end->modify('+1 day');
@@ -1296,7 +1302,8 @@ class PFA_Post_Scheduler
 
                 if ($next_time === null) {
                     $this->log_message("Could not determine next publish time - falling back to tomorrow at 06:00.");
-                    $timezone = new DateTimeZone(wp_timezone_string());
+                    // $timezone = new DateTimeZone(wp_timezone_string());
+                    $timezone = wp_timezone();
                     $next_time = new DateTime('tomorrow 06:00:00', $timezone);
                 }
 

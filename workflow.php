@@ -189,10 +189,24 @@ class Product_Feed_Automation {
         register_activation_hook(__FILE__, array($this, 'activate_plugin'));
         
         // Hook into cron events
-        $this->loader->add_action('pfa_daily_check', $scheduler, 'check_and_queue_products');
-        $this->loader->add_action('pfa_dripfeed_publisher', $scheduler, 'handle_dripfeed_publish');
-        $this->loader->add_action('pfa_api_check', $scheduler, 'handle_api_check');
-        $this->loader->add_action('pfa_clean_identifiers', $scheduler, 'clean_stale_identifiers');
+        // $this->loader->add_action('pfa_daily_check', $scheduler, 'check_and_queue_products');
+        // $this->loader->add_action('pfa_dripfeed_publisher', $scheduler, 'handle_dripfeed_publish');
+        // $this->loader->add_action('pfa_api_check', $scheduler, 'handle_api_check');
+        // $this->loader->add_action('pfa_clean_identifiers', $scheduler, 'clean_stale_identifiers');
+    
+        $hooks = array(
+            'pfa_daily_check'        => 'check_and_queue_products',
+            'pfa_dripfeed_publisher' => 'handle_dripfeed_publish',
+            'pfa_api_check'          => 'handle_api_check',
+            'pfa_clean_identifiers'  => 'clean_stale_identifiers',
+        );
+
+        foreach ($hooks as $hook => $method) {
+            if (false === has_action($hook, array($scheduler, $method))) {
+                $this->loader->add_action($hook, $scheduler, $method);
+            }
+        }
+
     }
 
     /**
@@ -295,10 +309,6 @@ function get_queue_status_data() {
     return $queue_manager->get_status(true);
 }
 
-/**
- * Add this code to the main plugin file (workflow.php) near the end, just before the 
- * function product_feed_automation() or at the end of the file before the closing PHP tag.
- */
 
 // Kick-start the plugin on version update
 register_activation_hook(__FILE__, 'pfa_force_restart_all_schedules');
