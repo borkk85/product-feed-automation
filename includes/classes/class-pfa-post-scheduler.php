@@ -1357,8 +1357,6 @@ class PFA_Post_Scheduler
      */
     public function clean_stale_identifiers()
     {
-        global $wpdb;
-
         $existing_identifiers = get_option('pfa_product_identifiers', array());
         if (empty($existing_identifiers)) {
             $this->log_message('No identifiers to clean.');
@@ -1367,52 +1365,37 @@ class PFA_Post_Scheduler
 
         $this->log_message('Starting identifier cleanup. Current count: ' . count($existing_identifiers));
 
-        $cleaned_identifiers = array();
+        // Get all active PFA posts with their product data
+        global $wpdb;
+        $active_posts = $wpdb->get_results("
+        SELECT p.ID, pm_id.meta_value as product_id
+        FROM {$wpdb->posts} p
+        JOIN {$wpdb->postmeta} pm_pfa ON p.ID = pm_pfa.post_id 
+            AND pm_pfa.meta_key = '_pfa_v2_post' 
+            AND pm_pfa.meta_value = 'true'
+        JOIN {$wpdb->postmeta} pm_id ON p.ID = pm_id.post_id 
+            AND pm_id.meta_key = '_product_id'
+        WHERE p.post_type = 'post'
+        AND p.post_status IN ('publish', 'future')
+    ");
 
-        foreach ($existing_identifiers as $identifier) {
-            // Check for posts in both publish and future status
-            $query = $wpdb->prepare("
-                SELECT p.ID
-                FROM {$wpdb->posts} p
-                JOIN {$wpdb->postmeta} pm1 ON p.ID = pm1.post_id
-                JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id
-                JOIN {$wpdb->postmeta} pm3 ON p.ID = pm3.post_id
-                WHERE p.post_type = 'post'
-                AND p.post_status IN ('publish', 'future')
-                AND pm1.meta_key = '_Amazone_produt_baseName'
-                AND pm2.meta_key = '_product_url'
-                AND pm3.meta_key = '_discount_price'
-                AND MD5(CONCAT(
-                    pm1.meta_value, '|',
-                    COALESCE((
-                        SELECT meta_value 
-                        FROM {$wpdb->postmeta} 
-                        WHERE post_id = p.ID 
-                        AND meta_key = '_product_gtin'
-                    ), ''), '|',
-                    COALESCE((
-                        SELECT meta_value 
-                        FROM {$wpdb->postmeta} 
-                        WHERE post_id = p.ID 
-                        AND meta_key = '_product_mpn'
-                    ), '')
-                )) = %s
-            ", $identifier);
-
-            $post_id = $wpdb->get_var($query);
-
-            if ($post_id) {
-                $cleaned_identifiers[] = $identifier;
-            } else {
-                $this->log_message("Removing stale identifier: $identifier");
-            }
+        // Generate identifiers for all active posts
+        $active_identifiers = array();
+        foreach ($active_posts as $post) {
+            // Use the same logic as in scheduling: product_id + empty gtin/mpn
+            $identifier = md5($post->product_id . '||');
+            $active_identifiers[] = $identifier;
         }
+
+        // Keep only identifiers that match active posts
+        $cleaned_identifiers = array_intersect($existing_identifiers, $active_identifiers);
 
         update_option('pfa_product_identifiers', $cleaned_identifiers);
         $this->log_message(sprintf(
-            'Identifier cleanup complete. Before: %d, After: %d',
+            'Identifier cleanup complete. Before: %d, After: %d, Removed: %d',
             count($existing_identifiers),
-            count($cleaned_identifiers)
+            count($cleaned_identifiers),
+            count($existing_identifiers) - count($cleaned_identifiers)
         ));
     }
 
