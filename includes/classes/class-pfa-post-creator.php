@@ -536,7 +536,8 @@ class PFA_Post_Creator
      * @param    string    $link    Product URL.
      * @return   int|false          Post ID if exists, false otherwise.
      */
-    public function check_if_already_in_db($link) {
+    public function check_if_already_in_db($link, $product_data = null)
+    {
         $parsed_url = parse_url($link);
         $actual_product_url = $link;
 
@@ -549,6 +550,19 @@ class PFA_Post_Creator
 
         $product_path = parse_url($actual_product_url, PHP_URL_PATH);
         $amazone_prod_basename = basename($product_path);
+
+        $product_id = null;
+        $mpn = null;
+        if (is_array($product_data)) {
+            if (isset($product_data['id'])) {
+                $product_id = $product_data['id'];
+            }
+            if (isset($product_data['mpn'])) {
+                $mpn = $product_data['mpn'];
+            }
+        } elseif (is_scalar($product_data)) {
+            $product_id = $product_data;
+        }
 
         global $wpdb;
         $query = $wpdb->prepare(
@@ -564,6 +578,8 @@ class PFA_Post_Creator
                     (pm.meta_key = '_Amazone_produt_baseName' AND pm.meta_value = %s)
                     OR
                     (pm.meta_key = '_product_id' AND pm.meta_value = %s)
+                    OR
+                    (%s IS NOT NULL AND pm.meta_key = '_product_id' AND pm.meta_value = %s)
                 )
                 AND p.post_type = 'post'
                 AND p.post_status NOT IN ('trash', 'auto-draft')
@@ -572,7 +588,9 @@ class PFA_Post_Creator
             $link,
             $actual_product_url,
             $amazone_prod_basename,
-            $amazone_prod_basename
+            $amazone_prod_basename,
+            $product_id,
+            $product_id
         );
 
         $result = $wpdb->get_row($query);

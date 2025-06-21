@@ -211,7 +211,7 @@ class PFA_Post_Scheduler
                         $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ?
                             $advertisers[$product['advertiserId']] : null;
 
-                        if (!$this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                        if (!$this->post_creator->check_if_already_in_db($product['trackingLink'], $product)) {
                             $post_data = array(
                                 'post_status' => 'publish', // Publish immediately
                             );
@@ -453,7 +453,7 @@ class PFA_Post_Scheduler
                         return false;
                     }
 
-                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'], $product)) {
                         return false;
                     }
 
@@ -1027,7 +1027,7 @@ class PFA_Post_Scheduler
                         continue;
                     }
 
-                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'])) {
+                    if ($this->post_creator->check_if_already_in_db($product['trackingLink'], $product)) {
                         $skipped['exists']++;
                         continue;
                     }

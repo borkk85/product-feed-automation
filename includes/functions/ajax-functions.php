@@ -323,7 +323,7 @@ function pfa_check_discount_results($job_id, $min_discount = 0) {
                 $exists = in_array($product_identifier, $existing_identifiers);
                 
                 if (!$exists) {
-                    $inDb = $post_creator->check_if_already_in_db($product['trackingLink']);
+                    $inDb = $post_creator->check_if_already_in_db($product['trackingLink'], $product);
                     if (!$inDb) {
                         $eligible_count++;
                         
