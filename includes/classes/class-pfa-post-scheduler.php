@@ -182,7 +182,6 @@ class PFA_Post_Scheduler
             }
 
             // Check for restricted hours (00:00-06:00)
-            // $timezone = new DateTimeZone(wp_timezone_string());
             $timezone = wp_timezone();
             $current_time = new DateTime('now', $timezone);
             $hour = (int)$current_time->format('H');
@@ -194,24 +193,37 @@ class PFA_Post_Scheduler
                 return;
             }
 
-            // Call the batch scheduler
+            // ENHANCED: Always call the batch scheduler to ensure queue population
+            $this->log_message("Calling check_and_queue_products to ensure posts are scheduled...");
             $this->check_and_queue_products();
 
-            // If we're at 6 AM and no posts scheduled for today yet, also process one immediately
+            // ENHANCED: Check if we need immediate action at 6 AM
             if ($hour == 6) {
                 $posts_today = $this->get_post_count_today();
+                $scheduled_posts = $this->get_scheduled_posts_count();
 
-                if ($posts_today == 0) {
-                    $this->log_message("6 AM with no posts today. Will process one post immediately.");
+                $this->log_message("6 AM check - Posts today: {$posts_today}, Scheduled: {$scheduled_posts}");
 
-                    // Process one post from queue
-                    $product = $this->queue_manager->get_next_queued_product();
-                    if ($product) {
+                if ($posts_today == 0 && $scheduled_posts == 0) {
+                    $this->log_message("6 AM with no posts today and none scheduled. Will try to process one post immediately.");
+
+                    // Try to get products and create one post immediately
+                    $products = $this->api_fetcher->fetch_products();
+                    if ($products && !empty($products)) {
                         $advertisers = $this->api_fetcher->fetch_advertisers();
-                        $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ?
-                            $advertisers[$product['advertiserId']] : null;
 
-                        if (!$this->post_creator->check_if_already_in_db($product['trackingLink'], $product)) {
+                        // Filter for eligible products
+                        $eligible_products = array_filter($products, function ($product) {
+                            return isset($product['availability']) &&
+                                $product['availability'] === 'in_stock' &&
+                                !$this->post_creator->check_if_already_in_db($product['trackingLink'], $product);
+                        });
+
+                        if (!empty($eligible_products)) {
+                            $product = reset($eligible_products); // Get first eligible product
+                            $advertiser_data = isset($product['advertiserId']) && isset($advertisers[$product['advertiserId']]) ?
+                                $advertisers[$product['advertiserId']] : null;
+
                             $post_data = array(
                                 'post_status' => 'publish', // Publish immediately
                             );
@@ -221,9 +233,45 @@ class PFA_Post_Scheduler
                             if ($result && !is_wp_error($result)) {
                                 $post_id = is_array($result) && isset($result['post_id']) ? $result['post_id'] : $result;
                                 $this->log_message("Successfully published product ID: {$product['id']} immediately (Post ID: {$post_id})");
+
+                                // Clear caches to reflect the new post
+                                $this->queue_manager->clear_status_cache();
                             }
+                        } else {
+                            $this->log_message("No eligible products found for immediate publishing");
                         }
+                    } else {
+                        $this->log_message("Could not fetch products for immediate publishing");
                     }
+                }
+            }
+
+            // ENHANCED: Schedule next dripfeed if none exists
+            $next_dripfeed = wp_next_scheduled('pfa_dripfeed_publisher');
+            if (!$next_dripfeed) {
+                $posts_today = $this->get_post_count_today();
+                $max_posts = get_option('max_posts_per_day', 10);
+
+                if ($posts_today < $max_posts) {
+                    // Schedule next dripfeed for tomorrow at 6 AM if we've reached daily limit
+                    // or in dripfeed interval if we haven't
+                    $scheduled_posts = $this->get_scheduled_posts_count();
+                    $total_planned = $posts_today + $scheduled_posts;
+
+                    if ($total_planned >= $max_posts) {
+                        // Tomorrow at 6 AM
+                        $next_time = new DateTime('tomorrow 06:00:00', $timezone);
+                        $this->log_message("Daily limit reached. Scheduling next dripfeed for tomorrow 6 AM");
+                    } else {
+                        // Next interval
+                        $interval_minutes = get_option('dripfeed_interval', 30);
+                        $next_time = clone $current_time;
+                        $next_time->modify("+{$interval_minutes} minutes");
+                        $this->log_message("Scheduling next dripfeed in {$interval_minutes} minutes");
+                    }
+
+                    wp_schedule_single_event($next_time->getTimestamp(), 'pfa_dripfeed_publisher');
+                    $this->log_message("Scheduled next dripfeed for: " . $next_time->format('Y-m-d H:i:s T'));
                 }
             }
         } catch (Exception $e) {
@@ -806,16 +854,19 @@ class PFA_Post_Scheduler
             $interval_minutes = (int)$this->dripfeed_interval;
             $this->log_message("Using dripfeed interval: {$interval_minutes} minutes");
 
-            // Calculate interval in hours (rounded)
-            // $interval_hours = ceil($interval_minutes / 60);
-            // $this->log_message("Interval in hours: {$interval_hours}");
-
-            // Fetch and analyze products
+            // ENHANCED: Always fetch products to ensure we have fresh data
             $this->log_message('Fetching products from API...');
             $products = $this->api_fetcher->fetch_products();
 
             if (!$products || empty($products)) {
                 $this->log_message('ERROR: No products returned from API. Aborting queue check.');
+
+                // ENHANCED: Schedule retry in 1 hour if API fails
+                $retry_time = time() + HOUR_IN_SECONDS;
+                if (!wp_next_scheduled('pfa_dripfeed_publisher', array('retry'))) {
+                    wp_schedule_single_event($retry_time, 'pfa_dripfeed_publisher');
+                    $this->log_message('Scheduled API retry in 1 hour due to API failure');
+                }
                 return;
             }
 
@@ -833,6 +884,18 @@ class PFA_Post_Scheduler
 
             if ($slots_available <= 0) {
                 $this->log_message('No slots available for today. Daily limit reached or exceeded.');
+
+                // ENHANCED: Schedule for tomorrow if no slots today
+                $timezone = wp_timezone();
+                $tomorrow = new DateTime('tomorrow 06:00:00', $timezone);
+                $existing_tomorrow = wp_next_scheduled('pfa_dripfeed_publisher');
+
+                // Only schedule if no dripfeed exists or existing one is not for tomorrow
+                if (!$existing_tomorrow || $existing_tomorrow < $tomorrow->getTimestamp() - 3600) {
+                    wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+                    wp_schedule_single_event($tomorrow->getTimestamp(), 'pfa_dripfeed_publisher');
+                    $this->log_message("Scheduled next dripfeed for tomorrow at 6 AM: " . $tomorrow->format('Y-m-d H:i:s T'));
+                }
                 return;
             }
 
@@ -841,13 +904,13 @@ class PFA_Post_Scheduler
             $scheduled_posts = $wpdb->get_results(
                 $wpdb->prepare(
                     "SELECT ID, post_date 
-                FROM {$wpdb->posts} p
-                JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-                WHERE p.post_type = %s 
-                AND p.post_status = %s
-                AND pm.meta_key = %s
-                AND pm.meta_value = %s
-                ORDER BY p.post_date ASC",
+            FROM {$wpdb->posts} p
+            JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+            WHERE p.post_type = %s 
+            AND p.post_status = %s
+            AND pm.meta_key = %s
+            AND pm.meta_value = %s
+            ORDER BY p.post_date ASC",
                     'post',
                     'future',
                     '_pfa_v2_post',
@@ -858,7 +921,6 @@ class PFA_Post_Scheduler
             $this->log_message("Currently scheduled posts: " . count($scheduled_posts));
 
             // Get timezone
-            // $timezone = new DateTimeZone(wp_timezone_string());
             $timezone = wp_timezone();
             $now = new DateTime('now', $timezone);
             $current_hour = (int)$now->format('H');
@@ -875,7 +937,6 @@ class PFA_Post_Scheduler
             $this->log_message("Will attempt to schedule {$posts_to_schedule} posts");
 
             // Calculate start time for the first scheduled post
-
             $next_time = clone $now;
             if ($current_hour < 7) {
                 $next_time->setTime(6, 0, 0);
@@ -884,16 +945,6 @@ class PFA_Post_Scheduler
                 $this->log_message("Too late for scheduling today (after 10 PM)");
                 return;
             } else {
-                // Round to the next interval
-                // $rounded_minutes = ceil($current_minute / 60) * 60;
-                // $hours_to_add = floor($rounded_minutes / 60);
-                // $minutes_to_set = $rounded_minutes % 60;
-
-                // $next_time->setTime(
-                //     $current_hour + $hours_to_add + $interval_hours,
-                //     $minutes_to_set,
-                //     0
-                // );
                 $next_time->modify("+{$interval_minutes} minutes");
                 $this->log_message("Starting schedule at: " . $next_time->format('H:i'));
             }
@@ -1150,17 +1201,30 @@ class PFA_Post_Scheduler
             $queue_manager = PFA_Queue_Manager::get_instance();
             $queue_manager->clear_status_cache();
 
-            // Schedule next dripfeed if needed
+            // ENHANCED: Schedule next dripfeed based on results
             if ($scheduled_count > 0) {
                 // Schedule for tomorrow at 6 AM
                 $tomorrow = new DateTime('tomorrow 06:00:00', $timezone);
                 wp_clear_scheduled_hook('pfa_dripfeed_publisher');
                 wp_schedule_single_event($tomorrow->getTimestamp(), 'pfa_dripfeed_publisher');
                 $this->log_message("Scheduled next dripfeed for tomorrow at 6 AM: " . $tomorrow->format('Y-m-d H:i:s T'));
+            } else {
+                // If no posts were scheduled, retry in 2 hours
+                $retry_time = time() + (2 * HOUR_IN_SECONDS);
+                wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+                wp_schedule_single_event($retry_time, 'pfa_dripfeed_publisher');
+                $this->log_message("No posts scheduled. Will retry in 2 hours");
             }
         } catch (Exception $e) {
             $this->log_message('ERROR in batch scheduling: ' . $e->getMessage());
             $this->log_message('Stack trace: ' . $e->getTraceAsString());
+
+            // ENHANCED: Schedule retry on exception
+            $retry_time = time() + (30 * MINUTE_IN_SECONDS);
+            if (!wp_next_scheduled('pfa_dripfeed_publisher')) {
+                wp_schedule_single_event($retry_time, 'pfa_dripfeed_publisher');
+                $this->log_message('Scheduled retry in 30 minutes due to exception');
+            }
         }
     }
 
@@ -1284,6 +1348,27 @@ class PFA_Post_Scheduler
                 wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
             }
 
+            // ENHANCED: Check if we need immediate queue population
+            $posts_today = $this->get_post_count_today();
+            $max_posts = get_option('max_posts_per_day', 10);
+            $scheduled_posts = $this->get_scheduled_posts_count();
+            $queue_manager = PFA_Queue_Manager::get_instance();
+            $current_queue_size = count($queue_manager->get_queue());
+
+            $this->log_message("Initialization check - Posts today: {$posts_today}, Max: {$max_posts}, Scheduled: {$scheduled_posts}, Queue size: {$current_queue_size}");
+
+            // If we have capacity and no queue, populate immediately
+            $total_planned = $posts_today + $scheduled_posts;
+            $available_slots = $max_posts - $total_planned;
+
+            if ($available_slots > 0 && $current_queue_size === 0) {
+                $this->log_message("No queue found but we have {$available_slots} available slots. Triggering immediate queue population.");
+
+                // Trigger immediate queue population via scheduled check
+                wp_schedule_single_event(time() + 30, 'pfa_dripfeed_publisher');
+                $this->log_message("Scheduled immediate dripfeed check in 30 seconds");
+            }
+
             // Retrieve the most recent scheduled post
             $last_scheduled = wp_get_recent_posts(array(
                 'post_type' => 'post',
@@ -1296,13 +1381,12 @@ class PFA_Post_Scheduler
             $last_scheduled_date = isset($last_scheduled[0]) ? $last_scheduled[0]['post_date'] : null;
             $this->log_message('Last scheduled post date for initialization: ' . ($last_scheduled_date ?: 'None'));
 
-            // Schedule the first dripfeed
+            // Schedule the first dripfeed if none exists
             if (!wp_next_scheduled('pfa_dripfeed_publisher')) {
                 $next_time = $this->calculate_next_publish_time();
 
                 if ($next_time === null) {
                     $this->log_message("Could not determine next publish time - falling back to tomorrow at 06:00.");
-                    // $timezone = new DateTimeZone(wp_timezone_string());
                     $timezone = wp_timezone();
                     $next_time = new DateTime('tomorrow 06:00:00', $timezone);
                 }
@@ -1325,10 +1409,33 @@ class PFA_Post_Scheduler
     {
         $next_daily = wp_next_scheduled('pfa_daily_check');
         $next_dripfeed = wp_next_scheduled('pfa_dripfeed_publisher');
+        $next_api = wp_next_scheduled('pfa_api_check');
 
-        $this->log_message('Schedule verification:');
-        $this->log_message('- Daily check: ' . ($next_daily ? date('Y-m-d H:i:s', $next_daily) : 'not scheduled'));
-        $this->log_message('- Dripfeed: ' . ($next_dripfeed ? date('Y-m-d H:i:s', $next_dripfeed) : 'not scheduled'));
+        $this->log_message('Schedule verification (All times in local timezone):');
+        $this->log_message('- Daily check: ' . ($next_daily ? wp_date('Y-m-d H:i:s T', $next_daily) . " (UTC: " . date('Y-m-d H:i:s', $next_daily) . ")" : 'not scheduled'));
+        $this->log_message('- Dripfeed: ' . ($next_dripfeed ? wp_date('Y-m-d H:i:s T', $next_dripfeed) . " (UTC: " . date('Y-m-d H:i:s', $next_dripfeed) . ")" : 'not scheduled'));
+        $this->log_message('- API check: ' . ($next_api ? wp_date('Y-m-d H:i:s T', $next_api) . " (UTC: " . date('Y-m-d H:i:s', $next_api) . ")" : 'not scheduled'));
+
+        // Additional verification - check if schedules are in the past
+        $current_timestamp = time();
+        if ($next_dripfeed && $next_dripfeed <= $current_timestamp) {
+            $this->log_message('WARNING: Dripfeed schedule is in the past! Rescheduling...');
+            wp_clear_scheduled_hook('pfa_dripfeed_publisher');
+
+            $timezone = wp_timezone();
+            $next_time = $this->calculate_next_publish_time();
+            if ($next_time) {
+                wp_schedule_single_event($next_time->getTimestamp(), 'pfa_dripfeed_publisher');
+                $this->log_message('Rescheduled dripfeed for: ' . $next_time->format('Y-m-d H:i:s T'));
+            }
+        }
+
+        if ($next_daily && $next_daily <= $current_timestamp) {
+            $this->log_message('WARNING: Daily check is in the past! Rescheduling...');
+            wp_clear_scheduled_hook('pfa_daily_check');
+            wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
+            $this->log_message('Rescheduled daily check for tomorrow midnight');
+        }
     }
 
     /**

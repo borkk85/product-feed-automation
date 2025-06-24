@@ -621,7 +621,6 @@ class PFA_Queue_Manager
         // Directly get the latest values from options to ensure freshness
         $this->log_message('Generating fresh status with direct option retrieval');
 
-        // $wp_timezone = new DateTimeZone(wp_timezone_string());
         $wp_timezone = wp_timezone();
         $current_time = new DateTime('now', $wp_timezone);
         $current_hour = (int)$current_time->format('G');
@@ -644,16 +643,15 @@ class PFA_Queue_Manager
         $this->log_message("Status generation - Automation enabled: " . ($automation_enabled ? 'true' : 'false'));
         $this->log_message("Status generation - Restricted time: " . ($is_restricted_time ? 'true' : 'false'));
 
-
         // If zero scheduled posts found, try a direct query as failsafe
         if ($scheduled_posts_count == 0) {
             global $wpdb;
             $failsafe_count = $wpdb->get_var(
                 "SELECT COUNT(*) 
-                FROM {$wpdb->posts} 
-                WHERE post_type = 'post' 
-                AND post_status = 'future'
-                AND post_date > '" . current_time('mysql') . "'"
+            FROM {$wpdb->posts} 
+            WHERE post_type = 'post' 
+            AND post_status = 'future'
+            AND post_date > '" . current_time('mysql') . "'"
             );
 
             if ($failsafe_count > 0) {
@@ -662,8 +660,18 @@ class PFA_Queue_Manager
             }
         }
 
+        // FIXED: Consistent timezone handling for all scheduled events
+        $next_api_check_timestamp = wp_next_scheduled('pfa_api_check');
+        $next_dripfeed_timestamp = wp_next_scheduled('pfa_dripfeed_publisher');
+        $next_daily_timestamp = wp_next_scheduled('pfa_daily_check');
+
+        // Convert all timestamps to local timezone consistently
+        $next_api_check = $next_api_check_timestamp ?
+            wp_date('Y-m-d H:i:s T', $next_api_check_timestamp) : 'Not scheduled';
+
+        $this->log_message("Next API check: UTC timestamp={$next_api_check_timestamp}, Local time={$next_api_check}");
+
         // Get API check time with proper interval handling
-        $next_api_check = get_option('pfa_next_api_check', 'Not scheduled');
         $last_check_time = get_option('pfa_last_api_check_time', 'Not Set');
         $check_interval = get_option('check_interval', 'daily');
 
@@ -723,24 +731,25 @@ class PFA_Queue_Manager
             )
         );
 
-        $next_dripfeed = wp_next_scheduled('pfa_dripfeed_publisher');
-        $next_daily = wp_next_scheduled('pfa_daily_check');
-
-        if ($next_dripfeed || $next_daily) {
+        // FIXED: Consistent timezone handling for schedule display
+        if ($next_dripfeed_timestamp || $next_daily_timestamp) {
             $status['schedules'] = array(
-                'daily_check' => $next_daily,
-                'dripfeed_check' => $next_dripfeed,
+                'daily_check' => $next_daily_timestamp,
+                'dripfeed_check' => $next_dripfeed_timestamp,
                 'dripfeed_interval' => get_option('dripfeed_interval', 60),
                 'formatted' => array(
-                    'daily' => $next_daily ? wp_date('Y-m-d H:i:s T', $next_daily) : 'Not scheduled',
-                    'dripfeed' => $next_dripfeed ? wp_date('Y-m-d H:i:s T', $next_dripfeed) : 'Not scheduled'
+                    'daily' => $next_daily_timestamp ? wp_date('Y-m-d H:i:s T', $next_daily_timestamp) : 'Not scheduled',
+                    'dripfeed' => $next_dripfeed_timestamp ? wp_date('Y-m-d H:i:s T', $next_dripfeed_timestamp) : 'Not scheduled'
                 )
             );
+
+            $this->log_message("Schedule timestamps - Daily: {$next_daily_timestamp}, Dripfeed: {$next_dripfeed_timestamp}");
+            $this->log_message("Schedule formatted - Daily: {$status['schedules']['formatted']['daily']}, Dripfeed: {$status['schedules']['formatted']['dripfeed']}");
         }
 
         // Ensure we have valid next check time based on interval
         $last_check_timestamp = strtotime($last_check_time);
-        if ($last_check_timestamp && $check_interval) {
+        if ($last_check_timestamp && $check_interval && !$next_api_check_timestamp) {
             $expected_next_check = null;
 
             switch ($check_interval) {
@@ -756,13 +765,11 @@ class PFA_Queue_Manager
             }
 
             if ($expected_next_check) {
-                $wp_next_api = wp_next_scheduled('pfa_api_check');
-                if (!$wp_next_api || $wp_next_api !== $expected_next_check) {
-                    wp_clear_scheduled_hook('pfa_api_check');
-                    wp_schedule_single_event($expected_next_check, 'pfa_api_check');
-                    $status['api_check']['next_check'] = wp_date('Y-m-d H:i:s T', $expected_next_check);
-                    update_option('pfa_next_api_check', $status['api_check']['next_check']);
-                }
+                wp_clear_scheduled_hook('pfa_api_check');
+                wp_schedule_single_event($expected_next_check, 'pfa_api_check');
+                $status['api_check']['next_check'] = wp_date('Y-m-d H:i:s T', $expected_next_check);
+                update_option('pfa_next_api_check', $status['api_check']['next_check']);
+                $this->log_message("Scheduled missing API check for: " . $status['api_check']['next_check']);
             }
         }
 
