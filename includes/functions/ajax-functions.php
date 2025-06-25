@@ -219,6 +219,12 @@ function pfa_reset_schedules() {
     $scheduler = PFA_Post_Scheduler::get_instance();
     $scheduler->clear_all_schedules();
     
+// Only initialize schedules if automation is enabled
+    if (get_option('pfa_automation_enabled') !== 'yes') {
+        wp_send_json_error(array('message' => 'Enable automation first'));
+        return;
+    }
+
     // Initialize new schedules
     $scheduler->initialize_schedules();
     

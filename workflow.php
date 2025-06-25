@@ -106,6 +106,19 @@ class Product_Feed_Automation {
             wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
             
             $check_interval = get_option('check_interval', 'daily');
+            if (!wp_next_scheduled('pfa_daily_check')) {
+            wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
+            // $check_interval = get_option('check_interval', 'daily');
+            // wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+        }
+
+        if (!wp_next_scheduled('pfa_dripfeed_publisher')) {
+            wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
+        }
+
+        if (!wp_next_scheduled('pfa_api_check')) {
+            wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+        }
             wp_schedule_event(time(), $check_interval, 'pfa_api_check');
             wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
         }

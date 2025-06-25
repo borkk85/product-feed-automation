@@ -319,7 +319,7 @@ class PFA_Queue_Manager
      * @access   private
      * @return   array    Current queue.
      */
-    private function get_queue($bypass_cache = false)
+    public function get_queue($bypass_cache = false)
     {
         // Try transient first unless bypassing cache
         if (!$bypass_cache) {

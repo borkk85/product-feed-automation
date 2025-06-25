@@ -349,7 +349,8 @@
                     } else {
                         alert(
                             "Failed to setup schedules: " +
-                            (response.data.message || "Unknown error")
+                            (response.data?.message || "Unknown error")
+                            // (response.data.message || "Unknown error")
                         );
                     }
                 },
