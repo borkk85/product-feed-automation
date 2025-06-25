@@ -100,6 +100,16 @@ class Product_Feed_Automation
 
         $dripfeed_interval = get_option('dripfeed_interval', 30);
 
+        
+        add_filter('cron_schedules', function($schedules) use ($dripfeed_interval) {
+            // $schedules["minutes_{$dripfeed_interval}"] = array(
+            $schedules["every_{$dripfeed_interval}_minutes"] = array(
+                'interval' => $dripfeed_interval * 60,
+                'display' => sprintf(__('Every %d minutes'), $dripfeed_interval)
+            );
+            return $schedules;
+        });
+
         // if (!wp_next_scheduled('pfa_daily_check') && 
         //     !wp_next_scheduled('pfa_dripfeed_publisher') && 
         //     !wp_next_scheduled('pfa_api_check')) {
@@ -128,14 +138,6 @@ class Product_Feed_Automation
             wp_schedule_event(time(), $check_interval, 'pfa_api_check');
         }
 
-        add_filter('cron_schedules', function($schedules) use ($dripfeed_interval) {
-            // $schedules["minutes_{$dripfeed_interval}"] = array(
-            $schedules["every_{$dripfeed_interval}_minutes"] = array(
-                'interval' => $dripfeed_interval * 60,
-                'display' => sprintf(__('Every %d minutes'), $dripfeed_interval)
-            );
-            return $schedules;
-        });
 
         // Add additional functionality from init.php
         add_action('pre_get_posts', function ($query) {
