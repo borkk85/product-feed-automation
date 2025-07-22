@@ -143,10 +143,10 @@ class PFA_API_Fetcher {
         $this->log_message('=== Starting Product Fetch ===');
         $this->log_message('Force fetch: ' . ($force_fetch ? 'true' : 'false'));
         
-        if (!$this->should_fetch_products() && !$force_fetch) {
-            $this->log_message('Fetch request denied - not a scheduled/required check');
-            return $this->get_cached_products();
-        }
+        // if (!$this->should_fetch_products() && !$force_fetch) {
+        //     $this->log_message('Fetch request denied - not a scheduled/required check');
+        //     return $this->get_cached_products();
+        // }
 
         try {
             // Get cached data if exists and not forced

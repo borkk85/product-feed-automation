@@ -194,42 +194,44 @@ class PFA_Queue_Manager
             return false;
         }
 
-        // Get current queue with a direct DB query to avoid potential transient issues
-        $queue = $this->get_queue(true);
-
-        // Check if product is already in queue
-        if ($this->is_product_in_queue($product['id'], $queue)) {
-            $this->log_message("Product {$product['id']} already in queue, skipping.");
-            return false;
-        }
-
-        // Check if queue has grown too large (safety limit)
-        if (count($queue) > 100) {
-            $this->log_message("Queue size exceeds limit (100). Consider processing existing items first.");
-            return false;
-        }
-
         try {
+            // Get current queue - FIXED: Don't use bypass_cache here to maintain queue continuity
+            $queue = get_transient($this->queue_key);
+            if (!is_array($queue)) {
+                // Try backup if transient fails
+                $queue = get_option($this->queue_key . '_backup', array());
+                if (!is_array($queue)) {
+                    $queue = array();
+                }
+                $this->log_message('Starting with empty queue or restored from backup');
+            } else {
+                $this->log_message('Retrieved existing queue with ' . count($queue) . ' items');
+            }
+
+            // Check if product is already in queue
+            if ($this->is_product_in_queue($product['id'], $queue, $product)) {
+                $this->log_message("Product {$product['id']} already in queue, skipping.");
+                return false;
+            }
+
+            // Check if queue has grown too large (safety limit)
+            if (count($queue) > 100) {
+                $this->log_message("Queue size exceeds limit (100). Consider processing existing items first.");
+                return false;
+            }
+
             // Add to queue
             $queue[] = $product;
 
-            // Store with different method if transient fails
+            // Store with both methods for reliability
             $transient_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
+            $backup_success = update_option($this->queue_key . '_backup', $queue);
 
             if (!$transient_success) {
-                $this->log_message("Transient storage failed for queue. Trying alternative storage.");
-
-                // Alternative: Store in regular option as backup
-                update_option($this->queue_key . '_backup', $queue);
-
-                // Try to clear transient and set again
-                delete_transient($this->queue_key);
-                $retry_success = set_transient($this->queue_key, $queue, DAY_IN_SECONDS);
-
-                if (!$retry_success) {
-                    $this->log_message("WARNING: Both transient storage attempts failed. Using backup option storage.");
-                } else {
-                    $this->log_message("Retry transient storage succeeded.");
+                $this->log_message("WARNING: Transient storage failed for queue. Using backup option storage.");
+                if (!$backup_success) {
+                    $this->log_message("CRITICAL: Both transient and backup storage failed!");
+                    return false;
                 }
             }
 
