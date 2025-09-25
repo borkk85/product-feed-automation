@@ -100,8 +100,8 @@ class Product_Feed_Automation
 
         $dripfeed_interval = get_option('dripfeed_interval', 30);
 
-        
-        add_filter('cron_schedules', function($schedules) use ($dripfeed_interval) {
+
+        add_filter('cron_schedules', function ($schedules) use ($dripfeed_interval) {
             // $schedules["minutes_{$dripfeed_interval}"] = array(
             $schedules["every_{$dripfeed_interval}_minutes"] = array(
                 'interval' => $dripfeed_interval * 60,
@@ -109,21 +109,6 @@ class Product_Feed_Automation
             );
             return $schedules;
         });
-
-        // if (!wp_next_scheduled('pfa_daily_check') && 
-        //     !wp_next_scheduled('pfa_dripfeed_publisher') && 
-        //     !wp_next_scheduled('pfa_api_check')) {
-
-        //     wp_clear_scheduled_hook('pfa_daily_check');
-        //     wp_clear_scheduled_hook('pfa_dripfeed_publisher');
-        //     wp_clear_scheduled_hook('pfa_api_check');
-
-        //     wp_schedule_event(strtotime('tomorrow midnight'), 'daily', 'pfa_daily_check');
-
-        //     $check_interval = get_option('check_interval', 'daily');
-        //     wp_schedule_event(time(), $check_interval, 'pfa_api_check');
-        //     wp_schedule_event(time(), "minutes_{$dripfeed_interval}", 'pfa_dripfeed_publisher');
-        // }
 
         $check_interval    = get_option('check_interval', 'daily');
 
@@ -141,9 +126,27 @@ class Product_Feed_Automation
 
         // Add additional functionality from init.php
         add_action('pre_get_posts', function ($query) {
-            if (!is_admin()) {
-                $query->set('post_status', 'publish');
+            // Don't modify queries in admin area
+            if (is_admin()) {
+                return;
             }
+
+            // Don't modify if Elementor is active
+            if (class_exists('\Elementor\Plugin')) {
+                return;
+            }
+
+            // Don't modify main queries or queries that already have post_status set
+            if (!$query->is_main_query() || $query->get('post_status')) {
+                return;
+            }
+
+            // Only apply to specific contexts where your plugin needs it
+            if (!is_home() && !is_archive() && !is_search()) {
+                return;
+            }
+
+            $query->set('post_status', 'publish');
         });
 
         // Set up clean stale identifiers functionality

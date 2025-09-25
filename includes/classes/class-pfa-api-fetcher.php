@@ -24,7 +24,7 @@ class PFA_API_Fetcher {
      * @access   private
      * @var      array    $excluded_advertisers    Array of advertiser IDs to exclude.
      */
-    private $excluded_advertisers = array(984549, 984552, 985459);
+    private $excluded_advertisers = array(984549, 984552, 985459, 984710);
 
     /**
      * Cache key for storing API products data.

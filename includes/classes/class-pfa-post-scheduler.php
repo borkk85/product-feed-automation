@@ -175,6 +175,9 @@ class PFA_Post_Scheduler
     {
         $this->log_message('=== Starting Dripfeed Publish (Queue Processing) ===');
 
+        $queue_manager = PFA_Queue_Manager::get_instance();
+        $lock_acquired = false;
+
         try {
             if (get_option('pfa_automation_enabled') !== 'yes') {
                 $this->log_message('Automation is disabled. Dripfeed publishing skipped.');
@@ -192,6 +195,13 @@ class PFA_Post_Scheduler
                 $this->log_message("Restricted hours (00:00-06:00). Pausing dripfeed.");
                 return;
             }
+
+            if (!$queue_manager->acquire_dripfeed_lock('dripfeed_publish')) {
+                $this->log_message('Another dripfeed run is already in progress. Skipping.');
+                return;
+            }
+
+            $lock_acquired = true;
 
             // Check daily posting limits
             $posts_today = $this->get_post_count_today();
@@ -211,8 +221,7 @@ class PFA_Post_Scheduler
                 return;
             }
 
-            // Get queue manager and check queue
-            $queue_manager = PFA_Queue_Manager::get_instance();
+            // Check queue contents
             $queue_size = count($queue_manager->get_queue());
 
             $this->log_message("Current queue size: {$queue_size}");
@@ -341,9 +350,9 @@ class PFA_Post_Scheduler
             wp_schedule_single_event($retry_time, 'pfa_dripfeed_publisher');
             $this->log_message('Scheduled retry in 30 minutes due to exception');
         } finally {
-            // Always release any locks
-            delete_transient('pfa_dripfeed_lock');
-            $this->log_message('Dripfeed lock released');
+            if ($lock_acquired && $queue_manager) {
+                $queue_manager->release_dripfeed_lock();
+            }
         }
     }
 

@@ -120,10 +120,19 @@ class PFA_Queue_Manager
      *
      * @since    1.0.0
      */
-    public function clear_status_cache()
+    public function clear_status_cache($reset_lock = false)
     {
+        if (!is_bool($reset_lock)) {
+            $reset_lock = false;
+        }
+
         delete_transient($this->cache_key);
-        delete_transient($this->lock_key);
+
+        if ($reset_lock) {
+            delete_transient($this->lock_key);
+            $this->log_message('Dripfeed lock reset via cache clear');
+        }
+
         wp_cache_flush(); // Flush WordPress object cache
         $this->log_message('Cache cleared completely');
     }
@@ -135,36 +144,46 @@ class PFA_Queue_Manager
      * @access   protected
      * @return   boolean    True if locked, false otherwise.
      */
-    protected function is_dripfeed_locked()
+    public function acquire_dripfeed_lock($context = 'scheduler')
     {
-        if (get_option('pfa_automation_enabled') !== 'yes') {
-            return true;
-        }
-
-        $current_hour = (int)current_time('G');
-        if ($current_hour >= 0 && $current_hour < 6) {
-            return true;
-        }
-
         $lock = get_transient($this->lock_key);
-        if (false !== $lock) {
-            $this->log_message('Dripfeed check is locked');
-            return true;
+
+        if ($lock !== false) {
+            $owner = is_array($lock) && isset($lock['owner']) ? $lock['owner'] : 'unknown';
+            $this->log_message(sprintf('Dripfeed lock is already held by %s', $owner));
+            return false;
         }
 
-        set_transient($this->lock_key, time(), 5 * MINUTE_IN_SECONDS);
-        return false;
+        $payload = array(
+            'owner' => $context,
+            'acquired_at' => time(),
+        );
+
+        set_transient($this->lock_key, $payload, 5 * MINUTE_IN_SECONDS);
+        $this->log_message(sprintf('Dripfeed lock acquired by %s', $context));
+        return true;
+    }
+
+    /**
+     * Check whether the dripfeed lock is currently held.
+     *
+     * @since    1.0.0
+     * @return   boolean
+     */
+    public function is_dripfeed_locked()
+    {
+        return get_transient($this->lock_key) !== false;
     }
 
     /**
      * Release the dripfeed lock.
      *
      * @since    1.0.0
-     * @access   protected
      */
-    protected function release_dripfeed_lock()
+    public function release_dripfeed_lock()
     {
         delete_transient($this->lock_key);
+        $this->log_message('Dripfeed lock released');
     }
 
     /**
@@ -490,8 +509,6 @@ class PFA_Queue_Manager
         } catch (Exception $e) {
             $this->log_message('Error in check_dripfeed: ' . $e->getMessage());
             wp_send_json_error(array('message' => 'Internal server error'));
-        } finally {
-            $this->release_dripfeed_lock();
         }
     }
 
