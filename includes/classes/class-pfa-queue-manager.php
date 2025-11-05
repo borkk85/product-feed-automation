@@ -323,11 +323,9 @@ class PFA_Queue_Manager
 
             $this->log_message("Added product {$product['id']} to queue. Queue now has " . count($queue) . " items.");
 
-            if (!empty($identifier_hashes)) {
-                $stored_identifiers = get_option('pfa_product_identifiers', array());
-                $stored_identifiers = array_values(array_unique(array_merge($stored_identifiers, $identifier_hashes)));
-                update_option('pfa_product_identifiers', $stored_identifiers);
-            }
+            // NOTE: Identifiers are now stored when post is CREATED, not when queued
+            // This prevents "identifier pollution" where queued but never-posted products
+            // permanently block future attempts
             return true;
         } catch (Exception $e) {
             $this->log_message("Exception adding product {$product['id']} to queue: " . $e->getMessage());

@@ -68,8 +68,14 @@ class PFA_Post_Creator
     public function build_canonical_product_key($product)
     {
         $stable = '';
+        $advertiser_id = '0'; // Default to 0 for products without advertiser
 
         if (is_array($product)) {
+            // Extract advertiser ID if available
+            if (isset($product['advertiserId'])) {
+                $advertiser_id = (string) $product['advertiserId'];
+            }
+
             $candidates = array(
                 isset($product['product_id']) ? $product['product_id'] : null,
                 isset($product['sku']) ? $product['sku'] : null,
@@ -112,7 +118,8 @@ class PFA_Post_Creator
             }
         }
 
-        return $stable;
+        // Return advertiser-scoped key to prevent collisions
+        return $advertiser_id . ':' . $stable;
     }
 
     /**
@@ -296,7 +303,33 @@ class PFA_Post_Creator
 
             $this->log_message('Successfully created post with ID: ' . $post_id);
 
+            // Store product identifiers NOW (after successful post creation)
+            // Build identifier hashes for this product
+            $identifier_hashes = array();
             $canonical_key = $this->build_canonical_product_key($product_data);
+
+            if (!empty($canonical_key)) {
+                $identifier_hashes[] = md5($canonical_key);
+            }
+
+            // Legacy hash for backwards compatibility
+            $id = isset($product_data['id']) ? (string) $product_data['id'] : '';
+            $gtin = isset($product_data['gtin']) ? (string) $product_data['gtin'] : '';
+            $mpn = isset($product_data['mpn']) ? (string) $product_data['mpn'] : '';
+
+            if ($id !== '' || $gtin !== '' || $mpn !== '') {
+                $identifier_hashes[] = md5($id . '|' . $gtin . '|' . $mpn);
+            }
+
+            // Store identifiers in global tracking array
+            if (!empty($identifier_hashes)) {
+                $identifier_hashes = array_values(array_unique(array_filter($identifier_hashes)));
+                $stored_identifiers = get_option('pfa_product_identifiers', array());
+                $stored_identifiers = array_values(array_unique(array_merge($stored_identifiers, $identifier_hashes)));
+                update_option('pfa_product_identifiers', $stored_identifiers);
+                $this->log_message('Stored ' . count($identifier_hashes) . ' identifier hash(es) for post ' . $post_id);
+            }
+
             $source_product_id = isset($product_data['product_id']) && !empty($product_data['product_id'])
                 ? $product_data['product_id']
                 : $product_id;
@@ -486,13 +519,35 @@ class PFA_Post_Creator
             return array('status' => 'error', 'message' => $post_id->get_error_message());
         }
 
+        // Store product identifiers NOW (after successful post creation)
+        $canonical_key = $this->build_canonical_product_key(array(
+            'advertiserId' => 0,
+            'product_id' => $amazone_prod_basename
+        ));
+
+        $identifier_hashes = array();
+        if (!empty($canonical_key)) {
+            $identifier_hashes[] = md5($canonical_key);
+        }
+
+        // Legacy hash (using basename as ID)
+        if (!empty($amazone_prod_basename)) {
+            $identifier_hashes[] = md5($amazone_prod_basename . '||');
+        }
+
+        // Store identifiers in global tracking array
+        if (!empty($identifier_hashes)) {
+            $identifier_hashes = array_values(array_unique(array_filter($identifier_hashes)));
+            $stored_identifiers = get_option('pfa_product_identifiers', array());
+            $stored_identifiers = array_values(array_unique(array_merge($stored_identifiers, $identifier_hashes)));
+            update_option('pfa_product_identifiers', $stored_identifiers);
+            $this->log_message('Stored ' . count($identifier_hashes) . ' identifier hash(es) for manual post ' . $post_id);
+        }
+
         update_post_meta($post_id, '_Amazone_produt_baseName', $amazone_prod_basename);
         update_post_meta($post_id, '_product_id', $amazone_prod_basename);
         update_post_meta($post_id, '_pfa_source_product_id', $amazone_prod_basename);
-        update_post_meta($post_id, '_pfa_product_key', $this->build_canonical_product_key(array(
-            'advertiserId' => 0,
-            'product_id' => $amazone_prod_basename
-        )));
+        update_post_meta($post_id, '_pfa_product_key', $canonical_key);
         update_post_meta($post_id, '_product_url', $product_url);
         update_post_meta($post_id, 'dynamic_amazone_link', $dynamic_esc_url);
         update_post_meta($post_id, 'dynamic_link', $dynamic_esc_url);

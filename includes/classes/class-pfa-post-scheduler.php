@@ -1500,16 +1500,87 @@ class PFA_Post_Scheduler
     /**
      * Clean stale product identifiers.
      *
+     * Removes identifiers for products that no longer have corresponding posts.
+     * This prevents "identifier pollution" where deleted posts block future posts.
+     *
      * @since    1.0.0
      */
     public function clean_stale_identifiers()
     {
-        // Skip cleanup to avoid removing valid dedupe entries we cannot
-        // safely reconstruct from post meta (queue uses id|gtin|mpn).
+        global $wpdb;
+
+        $this->log_message('=== Starting Identifier Cleanup ===');
+
         $existing_identifiers = get_option('pfa_product_identifiers', array());
-        $count = is_array($existing_identifiers) ? count($existing_identifiers) : 0;
-        $this->log_message('Identifier cleanup skipped to preserve dedupe list (current count: ' . $count . ').');
-        return;
+        $initial_count = is_array($existing_identifiers) ? count($existing_identifiers) : 0;
+
+        if ($initial_count === 0) {
+            $this->log_message('No identifiers to clean up');
+            return;
+        }
+
+        $this->log_message("Current identifier count: {$initial_count}");
+
+        // Get all existing PFA posts
+        $posts = $wpdb->get_results($wpdb->prepare(
+            "SELECT p.ID, pm_key.meta_value as product_key,
+                    pm_id.meta_value as product_id,
+                    pm_gtin.meta_value as gtin,
+                    pm_mpn.meta_value as mpn
+             FROM {$wpdb->posts} p
+             JOIN {$wpdb->postmeta} pm_flag ON pm_flag.post_id = p.ID
+                AND pm_flag.meta_key = '_pfa_v2_post'
+                AND pm_flag.meta_value = 'true'
+             LEFT JOIN {$wpdb->postmeta} pm_key ON pm_key.post_id = p.ID
+                AND pm_key.meta_key = '_pfa_product_key'
+             LEFT JOIN {$wpdb->postmeta} pm_id ON pm_id.post_id = p.ID
+                AND pm_id.meta_key = '_product_id'
+             LEFT JOIN {$wpdb->postmeta} pm_gtin ON pm_gtin.post_id = p.ID
+                AND pm_gtin.meta_key = 'gtin'
+             LEFT JOIN {$wpdb->postmeta} pm_mpn ON pm_mpn.post_id = p.ID
+                AND pm_mpn.meta_key = 'mpn'
+             WHERE p.post_type = 'post'
+             AND p.post_status NOT IN ('trash', 'auto-draft')"
+        ));
+
+        $this->log_message("Found {$wpdb->num_rows} existing PFA posts");
+
+        // Build valid identifier hashes from existing posts
+        $valid_identifiers = array();
+
+        foreach ($posts as $post) {
+            // Canonical key hash
+            if (!empty($post->product_key)) {
+                $valid_identifiers[] = md5($post->product_key);
+            }
+
+            // Legacy hash (id|gtin|mpn)
+            $id = !empty($post->product_id) ? (string) $post->product_id : '';
+            $gtin = !empty($post->gtin) ? (string) $post->gtin : '';
+            $mpn = !empty($post->mpn) ? (string) $post->mpn : '';
+
+            if ($id !== '' || $gtin !== '' || $mpn !== '') {
+                $valid_identifiers[] = md5($id . '|' . $gtin . '|' . $mpn);
+            }
+        }
+
+        $valid_identifiers = array_values(array_unique(array_filter($valid_identifiers)));
+        $valid_count = count($valid_identifiers);
+
+        $this->log_message("Built {$valid_count} valid identifier hashes from posts");
+
+        // Remove orphaned identifiers (those not in valid list)
+        $cleaned_identifiers = array_values(array_intersect($existing_identifiers, $valid_identifiers));
+        $removed_count = $initial_count - count($cleaned_identifiers);
+
+        if ($removed_count > 0) {
+            update_option('pfa_product_identifiers', $cleaned_identifiers);
+            $this->log_message("Cleaned {$removed_count} orphaned identifiers (kept {$valid_count})");
+        } else {
+            $this->log_message("No orphaned identifiers found - all identifiers are valid");
+        }
+
+        $this->log_message('=== Identifier Cleanup Complete ===');
     }
 
     /**

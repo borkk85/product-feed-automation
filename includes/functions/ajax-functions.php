@@ -637,4 +637,77 @@ function pfa_clear_duplicates_ajax() {
         'actions' => $actions
     ));
 }
+
+/**
+ * Emergency queue and identifier reset.
+ *
+ * Clears queue and rebuilds identifiers from existing posts only.
+ * This fixes "identifier pollution" where products can never be re-queued.
+ *
+ * @since    1.0.0
+ */
+function pfa_emergency_reset() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+
+    error_log('[PFA Emergency Reset] Starting emergency reset...');
+
+    try {
+        // Step 1: Clear queue
+        delete_transient('pfa_product_queue');
+        delete_option('pfa_product_queue_backup');
+        error_log('[PFA Emergency Reset] Cleared queue transient and backup');
+
+        // Step 2: Rebuild identifiers from existing posts only
+        $scheduler = PFA_Post_Scheduler::get_instance();
+        $scheduler->clean_stale_identifiers();
+        error_log('[PFA Emergency Reset] Cleaned stale identifiers');
+
+        // Step 3: Clear API cache to force fresh fetch
+        $api_fetcher = PFA_API_Fetcher::get_instance();
+        $api_fetcher->clear_cache();
+        error_log('[PFA Emergency Reset] Cleared API cache');
+
+        // Step 4: Clear status cache
+        $queue_manager = PFA_Queue_Manager::get_instance();
+        $queue_manager->clear_status_cache(true); // true = also reset dripfeed lock
+        error_log('[PFA Emergency Reset] Cleared status cache and dripfeed lock');
+
+        // Step 5: Trigger immediate queue population
+        if (get_option('pfa_automation_enabled') === 'yes') {
+            $scheduler->check_and_queue_products();
+            error_log('[PFA Emergency Reset] Triggered queue population');
+        }
+
+        // Step 6: Get fresh status
+        $status = $queue_manager->get_status(true);
+
+        $identifier_count = count(get_option('pfa_product_identifiers', array()));
+        $queue_size = count($queue_manager->get_queue());
+
+        error_log(sprintf(
+            '[PFA Emergency Reset] Complete - Identifiers: %d, Queue size: %d',
+            $identifier_count,
+            $queue_size
+        ));
+
+        wp_send_json_success(array(
+            'message' => 'Emergency reset completed successfully',
+            'identifier_count' => $identifier_count,
+            'queue_size' => $queue_size,
+            'status' => $status
+        ));
+
+    } catch (Exception $e) {
+        error_log('[PFA Emergency Reset] Error: ' . $e->getMessage());
+        wp_send_json_error(array(
+            'message' => 'Reset failed: ' . $e->getMessage()
+        ));
+    }
+}
+add_action('wp_ajax_pfa_emergency_reset', 'pfa_emergency_reset');
 add_action('wp_ajax_pfa_clear_duplicates', 'pfa_clear_duplicates_ajax');
