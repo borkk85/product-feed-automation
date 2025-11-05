@@ -115,7 +115,7 @@ class PFA_Post_Scheduler
             $this->post_creator = PFA_Post_Creator::get_instance();
             $this->queue_manager = PFA_Queue_Manager::get_instance();
             $this->api_fetcher = PFA_API_Fetcher::get_instance();
-            $this->register_hooks();
+            // Hook registration is handled centrally via the plugin loader to avoid duplicates
         }
     }
 
@@ -256,6 +256,55 @@ class PFA_Post_Scheduler
 
             $this->log_message("Processing product ID: {$product['id']} from queue");
 
+            // Determine best URL to validate: prefer direct link, else decoded tracking 'u', else trackingLink
+            $validation_url = '';
+            if (!empty($product['link']) && function_exists('wp_http_validate_url') && wp_http_validate_url($product['link'])) {
+                $validation_url = $product['link'];
+            } elseif (!empty($product['trackingLink'])) {
+                $validation_url = $product['trackingLink'];
+                $parsed = wp_parse_url($product['trackingLink']);
+                if (!empty($parsed['query'])) {
+                    parse_str($parsed['query'], $q);
+                    if (!empty($q['u'])) {
+                        $decoded = urldecode($q['u']);
+                        if (function_exists('wp_http_validate_url') && wp_http_validate_url($decoded)) {
+                            $validation_url = $decoded;
+                        }
+                    }
+                }
+            }
+
+            // Validate destination URL before any scheduling effort
+            if (empty($validation_url) || !$this->is_destination_live($validation_url)) {
+                $this->log_message("Skipping product ID: {$product['id']} due to invalid/unreachable tracking link");
+
+                // Ensure future queue refills may reconsider this product later by clearing its identifier
+                $identifier_hashes = $queue_manager->get_identifier_hashes($product);
+                $existing_identifiers = get_option('pfa_product_identifiers', array());
+                $modified = false;
+
+                foreach ($identifier_hashes as $hash) {
+                    $key = array_search($hash, $existing_identifiers, true);
+                    if ($key !== false) {
+                        unset($existing_identifiers[$key]);
+                        $modified = true;
+                    }
+                }
+
+                if ($modified) {
+                    update_option('pfa_product_identifiers', array_values($existing_identifiers));
+                    $this->log_message("Removed identifier(s) for skipped product {$product['id']} to allow future reconsideration");
+                }
+
+                // Schedule the next dripfeed attempt based on interval
+                $interval_minutes = (int) get_option('dripfeed_interval', 30);
+                $next_dripfeed = clone $current_time;
+                $next_dripfeed->modify("+{$interval_minutes} minutes");
+                wp_schedule_single_event($next_dripfeed->getTimestamp(), 'pfa_dripfeed_publisher');
+                $this->log_message("Scheduled next dripfeed after skip for: " . $next_dripfeed->format('Y-m-d H:i:s T'));
+                return;
+            }
+
             // Calculate next publishing time
             $next_time = $this->calculate_next_publish_time();
 
@@ -357,6 +406,60 @@ class PFA_Post_Scheduler
     }
 
     /**
+     * Validate a product destination URL using WP HTTP API (HEAD then GET fallback).
+     * Caches results briefly to avoid repeated network calls.
+     *
+     * @since    1.0.0
+     * @access   private
+     * @param    string    $url    Destination URL to validate.
+     * @return   bool               True if URL seems live (2xx/3xx), false otherwise.
+     */
+    private function is_destination_live($url)
+    {
+        if (empty($url) || !function_exists('wp_http_validate_url') || !wp_http_validate_url($url)) {
+            return false;
+        }
+
+        $cache_key = 'pfa_url_status_' . md5($url);
+        $cached = get_transient($cache_key);
+        if ($cached === 'live') {
+            return true;
+        }
+        if ($cached === 'dead') {
+            return false;
+        }
+
+        $args = array(
+            'timeout'     => 6,
+            'redirection' => 5,
+            'sslverify'   => true,
+            'user-agent'  => 'PFA/1.0; ' . home_url('/'),
+        );
+
+        // Try HEAD first
+        $response = wp_remote_head($url, $args);
+        $code = 0;
+        if (!is_wp_error($response)) {
+            $code = (int) wp_remote_retrieve_response_code($response);
+        }
+
+        // Fallback to GET when HEAD fails or returns non 2xx/3xx
+        if ($code < 200 || $code >= 400) {
+            $response = wp_remote_get($url, $args);
+            if (!is_wp_error($response)) {
+                $code = (int) wp_remote_retrieve_response_code($response);
+            } else {
+                $code = 0;
+            }
+        }
+
+        $ok = ($code >= 200 && $code < 400);
+        set_transient($cache_key, $ok ? 'live' : 'dead', $ok ? HOUR_IN_SECONDS : 6 * HOUR_IN_SECONDS);
+        $this->log_message(sprintf('URL check for destination returned code %d (%s)', $code, $ok ? 'live' : 'dead'));
+        return $ok;
+    }
+
+    /**
      * Handle API check cron event.
      *
      * @since    1.0.0
@@ -427,10 +530,12 @@ class PFA_Post_Scheduler
             }
 
             $product_lookup = array();
+            $product_map = array(); // full product data keyed by id for re-post queueing
             foreach ($products as $product) {
                 $product_lookup[$product['id']] = array(
                     'availability' => isset($product['availability']) ? $product['availability'] : ''
                 );
+                $product_map[$product['id']] = $product;
             }
 
             $this->log_message(sprintf(
@@ -469,6 +574,7 @@ class PFA_Post_Scheduler
 
             $archived_count = 0;
             $checked_count = 0;
+            $reposted_count = 0;
 
             // Check active posts for archiving
             foreach ($active_posts as $post) {
@@ -544,13 +650,23 @@ class PFA_Post_Scheduler
                     $product_info = $product_lookup[$product_id];
 
                     if ($product_info['availability'] === 'in_stock') {
-                        $this->log_message(sprintf(
-                            "Reactivating post ID %d: Product back in stock",
-                            $post->ID
-                        ));
-
-                        $this->reactivate_post($post->ID, $active_cat->term_id, $product_info);
-                        $reactivated_count++;
+                        // Queue a brand-new post for this product instead of reactivating the old post
+                        if (isset($product_map[$product_id])) {
+                            $queue_manager = PFA_Queue_Manager::get_instance();
+                            if ($queue_manager->add_to_queue($product_map[$product_id])) {
+                                $reposted_count++;
+                                $this->log_message(sprintf(
+                                    "Queued new post for restocked product ID %s (archived post ID %d)",
+                                    $product_id,
+                                    $post->ID
+                                ));
+                            } else {
+                                $this->log_message(sprintf(
+                                    "Skipped queueing restocked product ID %s (already in queue)",
+                                    $product_id
+                                ));
+                            }
+                        }
                     }
                 }
             }
@@ -585,7 +701,7 @@ class PFA_Post_Scheduler
                     'total' => count($products),
                     'eligible' => count($actually_eligible),
                     'archived' => $archived_count,
-                    'reactivated' => $reactivated_count,
+                    'reactivated' => $reposted_count, // reuse existing key for UI, counting queued re-posts
                     'checked' => $checked_count
                 );
 
@@ -789,123 +905,123 @@ class PFA_Post_Scheduler
         return $next_time;
     }
 
-    public function debug_scheduled_posts()
-    {
-        global $wpdb;
+    // public function debug_scheduled_posts()
+    // {
+    //     global $wpdb;
 
-        $this->log_message("=== DEBUG: Scheduled Posts Visibility Check ===");
+    //     $this->log_message("=== DEBUG: Scheduled Posts Visibility Check ===");
 
-        // 1. Check with WordPress native query
-        $wp_scheduled = get_posts(array(
-            'post_type' => 'post',
-            'post_status' => 'future',
-            'posts_per_page' => -1,
-            'fields' => 'ids'
-        ));
+    //     // 1. Check with WordPress native query
+    //     $wp_scheduled = get_posts(array(
+    //         'post_type' => 'post',
+    //         'post_status' => 'future',
+    //         'posts_per_page' => -1,
+    //         'fields' => 'ids'
+    //     ));
 
-        $this->log_message("WP Native Query: " . count($wp_scheduled) . " scheduled posts found");
+    //     $this->log_message("WP Native Query: " . count($wp_scheduled) . " scheduled posts found");
 
-        // 2. Check with direct SQL
-        $direct_sql = $wpdb->get_results(
-            "SELECT ID, post_title, post_date, post_status 
-             FROM {$wpdb->posts}
-             WHERE post_type = 'post'
-             AND post_status = 'future'
-             ORDER BY post_date ASC"
-        );
+    //     // 2. Check with direct SQL
+    //     $direct_sql = $wpdb->get_results(
+    //         "SELECT ID, post_title, post_date, post_status 
+    //          FROM {$wpdb->posts}
+    //          WHERE post_type = 'post'
+    //          AND post_status = 'future'
+    //          ORDER BY post_date ASC"
+    //     );
 
-        $this->log_message("Direct SQL Query: " . count($direct_sql) . " scheduled posts found");
+    //     $this->log_message("Direct SQL Query: " . count($direct_sql) . " scheduled posts found");
 
-        // 3. Check with the plugin's meta condition
-        $with_meta = $wpdb->get_results(
-            "SELECT p.ID, p.post_title, p.post_date, p.post_status 
-             FROM {$wpdb->posts} p
-             JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
-             WHERE p.post_type = 'post'
-             AND p.post_status = 'future'
-             AND pm.meta_key = '_pfa_v2_post'
-             AND pm.meta_value = 'true'
-             ORDER BY p.post_date ASC"
-        );
+    //     // 3. Check with the plugin's meta condition
+    //     $with_meta = $wpdb->get_results(
+    //         "SELECT p.ID, p.post_title, p.post_date, p.post_status 
+    //          FROM {$wpdb->posts} p
+    //          JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
+    //          WHERE p.post_type = 'post'
+    //          AND p.post_status = 'future'
+    //          AND pm.meta_key = '_pfa_v2_post'
+    //          AND pm.meta_value = 'true'
+    //          ORDER BY p.post_date ASC"
+    //     );
 
-        $this->log_message("Plugin Meta Query: " . count($with_meta) . " scheduled posts found");
+    //     $this->log_message("Plugin Meta Query: " . count($with_meta) . " scheduled posts found");
 
-        // 4. Show details of each scheduled post
-        if (!empty($direct_sql)) {
-            $this->log_message("Details of scheduled posts:");
+    //     // 4. Show details of each scheduled post
+    //     if (!empty($direct_sql)) {
+    //         $this->log_message("Details of scheduled posts:");
 
-            foreach ($direct_sql as $post) {
-                $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
-                $post_date = get_post_meta($post->ID, 'post_date', true);
+    //         foreach ($direct_sql as $post) {
+    //             $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
+    //             $post_date = get_post_meta($post->ID, 'post_date', true);
 
-                $this->log_message(sprintf(
-                    "ID: %d, Title: %s, Date: %s, Has PFA Meta: %s",
-                    $post->ID,
-                    substr($post->post_title, 0, 30),
-                    $post->post_date,
-                    $has_meta ? 'YES' : 'NO'
-                ));
+    //             $this->log_message(sprintf(
+    //                 "ID: %d, Title: %s, Date: %s, Has PFA Meta: %s",
+    //                 $post->ID,
+    //                 substr($post->post_title, 0, 30),
+    //                 $post->post_date,
+    //                 $has_meta ? 'YES' : 'NO'
+    //             ));
 
-                // Check if all required meta is present
-                // $required_meta = ['_pfa_v2_post', '_Amazone_produt_baseName', '_product_url', 'dynamic_amazone_link'];
-                $required_meta = ['_pfa_v2_post', '_product_id', '_product_url', 'dynamic_amazone_link'];
+    //             // Check if all required meta is present
+    //             // $required_meta = ['_pfa_v2_post', '_Amazone_produt_baseName', '_product_url', 'dynamic_amazone_link'];
+    //             $required_meta = ['_pfa_v2_post', '_product_id', '_product_url', 'dynamic_amazone_link'];
 
-                $missing = [];
+    //             $missing = [];
 
-                foreach ($required_meta as $meta_key) {
-                    if (!get_post_meta($post->ID, $meta_key, true)) {
-                        $missing[] = $meta_key;
-                    }
-                }
+    //             foreach ($required_meta as $meta_key) {
+    //                 if (!get_post_meta($post->ID, $meta_key, true)) {
+    //                     $missing[] = $meta_key;
+    //                 }
+    //             }
 
-                if (!empty($missing)) {
-                    $this->log_message("  Missing required meta: " . implode(', ', $missing));
-                }
-            }
-        }
+    //             if (!empty($missing)) {
+    //                 $this->log_message("  Missing required meta: " . implode(', ', $missing));
+    //             }
+    //         }
+    //     }
 
-        // 5. Check posts created today that might be incorrectly counted
-        // $timezone = new DateTimeZone(wp_timezone_string());
-        $timezone = wp_timezone();
-        $today_start = new DateTime('today', $timezone);
+    //     // 5. Check posts created today that might be incorrectly counted
+    //     // $timezone = new DateTimeZone(wp_timezone_string());
+    //     $timezone = wp_timezone();
+    //     $today_start = new DateTime('today', $timezone);
 
-        $today_posts = $wpdb->get_results(
-            $wpdb->prepare(
-                "SELECT ID, post_title, post_date, post_status 
-                 FROM {$wpdb->posts}
-                 WHERE post_type = 'post'
-                 AND post_date >= %s
-                 ORDER BY post_date ASC",
-                $today_start->format('Y-m-d H:i:s')
-            )
-        );
+    //     $today_posts = $wpdb->get_results(
+    //         $wpdb->prepare(
+    //             "SELECT ID, post_title, post_date, post_status 
+    //              FROM {$wpdb->posts}
+    //              WHERE post_type = 'post'
+    //              AND post_date >= %s
+    //              ORDER BY post_date ASC",
+    //             $today_start->format('Y-m-d H:i:s')
+    //         )
+    //     );
 
-        $this->log_message("Posts created/dated today: " . count($today_posts));
+    //     $this->log_message("Posts created/dated today: " . count($today_posts));
 
-        if (!empty($today_posts)) {
-            foreach ($today_posts as $post) {
-                $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
+    //     if (!empty($today_posts)) {
+    //         foreach ($today_posts as $post) {
+    //             $has_meta = get_post_meta($post->ID, '_pfa_v2_post', true) === 'true';
 
-                $this->log_message(sprintf(
-                    "Today's post - ID: %d, Title: %s, Date: %s, Status: %s, Has PFA Meta: %s",
-                    $post->ID,
-                    substr($post->post_title, 0, 30),
-                    $post->post_date,
-                    $post->post_status,
-                    $has_meta ? 'YES' : 'NO'
-                ));
-            }
-        }
+    //             $this->log_message(sprintf(
+    //                 "Today's post - ID: %d, Title: %s, Date: %s, Status: %s, Has PFA Meta: %s",
+    //                 $post->ID,
+    //                 substr($post->post_title, 0, 30),
+    //                 $post->post_date,
+    //                 $post->post_status,
+    //                 $has_meta ? 'YES' : 'NO'
+    //             ));
+    //         }
+    //     }
 
-        $this->log_message("=== End Scheduled Posts Debug ===");
+    //     $this->log_message("=== End Scheduled Posts Debug ===");
 
-        return [
-            'wp_scheduled_count' => count($wp_scheduled),
-            'direct_sql_count' => count($direct_sql),
-            'with_meta_count' => count($with_meta),
-            'today_posts' => count($today_posts)
-        ];
-    }
+    //     return [
+    //         'wp_scheduled_count' => count($wp_scheduled),
+    //         'direct_sql_count' => count($direct_sql),
+    //         'with_meta_count' => count($with_meta),
+    //         'today_posts' => count($today_posts)
+    //     ];
+    // }
 
     /**
      * Check for available products and queue them for publishing.
@@ -1046,14 +1162,20 @@ class PFA_Post_Scheduler
                         continue;
                     }
 
-                    $variant_identifier = md5(
-                        $product['id'] . '|' .
-                            (isset($product['gtin']) ? $product['gtin'] : '') . '|' .
-                            (isset($product['mpn']) ? $product['mpn'] : '')
-                    );
+                    $identifier_hashes = $queue_manager->get_identifier_hashes($product);
+                    if (empty($identifier_hashes)) {
+                        continue;
+                    }
 
-                    // Skip if already processed
-                    if (in_array($variant_identifier, $existing_identifiers)) {
+                    $already_processed = false;
+                    foreach ($identifier_hashes as $hash) {
+                        if (in_array($hash, $existing_identifiers, true)) {
+                            $already_processed = true;
+                            break;
+                        }
+                    }
+
+                    if ($already_processed) {
                         $skipped['duplicate']++;
                         continue;
                     }
@@ -1071,7 +1193,7 @@ class PFA_Post_Scheduler
                     // This product is eligible for queue
                     $eligible_products[] = array(
                         'product' => $product,
-                        'identifier' => $variant_identifier,
+                        'hashes' => $identifier_hashes,
                         'advertiser_id' => $current_advertiser
                     );
 
@@ -1113,14 +1235,14 @@ class PFA_Post_Scheduler
             $added_count = 0;
             foreach ($eligible_products as $item) {
                 $product = $item['product'];
-                $identifier = $item['identifier'];
+                $identifier_hashes = $item['hashes'];
 
                 $this->log_message("Adding product ID: {$product['id']} to queue");
 
                 if ($queue_manager->add_to_queue($product)) {
-                    // Add to existing identifiers to prevent duplicates
-                    $existing_identifiers[] = $identifier;
-                    update_option('pfa_product_identifiers', $existing_identifiers);
+                    // Add to in-memory identifiers to prevent duplicates during this run
+                    $existing_identifiers = array_merge($existing_identifiers, $identifier_hashes);
+                    $existing_identifiers = array_values(array_unique($existing_identifiers));
                     $added_count++;
                 } else {
                     $this->log_message("Failed to add product ID: {$product['id']} to queue");
@@ -1382,46 +1504,12 @@ class PFA_Post_Scheduler
      */
     public function clean_stale_identifiers()
     {
+        // Skip cleanup to avoid removing valid dedupe entries we cannot
+        // safely reconstruct from post meta (queue uses id|gtin|mpn).
         $existing_identifiers = get_option('pfa_product_identifiers', array());
-        if (empty($existing_identifiers)) {
-            $this->log_message('No identifiers to clean.');
-            return;
-        }
-
-        $this->log_message('Starting identifier cleanup. Current count: ' . count($existing_identifiers));
-
-        // Get all active PFA posts with their product data
-        global $wpdb;
-        $active_posts = $wpdb->get_results("
-        SELECT p.ID, pm_id.meta_value as product_id
-        FROM {$wpdb->posts} p
-        JOIN {$wpdb->postmeta} pm_pfa ON p.ID = pm_pfa.post_id 
-            AND pm_pfa.meta_key = '_pfa_v2_post' 
-            AND pm_pfa.meta_value = 'true'
-        JOIN {$wpdb->postmeta} pm_id ON p.ID = pm_id.post_id 
-            AND pm_id.meta_key = '_product_id'
-        WHERE p.post_type = 'post'
-        AND p.post_status IN ('publish', 'future')
-    ");
-
-        // Generate identifiers for all active posts
-        $active_identifiers = array();
-        foreach ($active_posts as $post) {
-            // Use the same logic as in scheduling: product_id + empty gtin/mpn
-            $identifier = md5($post->product_id . '||');
-            $active_identifiers[] = $identifier;
-        }
-
-        // Keep only identifiers that match active posts
-        $cleaned_identifiers = array_intersect($existing_identifiers, $active_identifiers);
-
-        update_option('pfa_product_identifiers', $cleaned_identifiers);
-        $this->log_message(sprintf(
-            'Identifier cleanup complete. Before: %d, After: %d, Removed: %d',
-            count($existing_identifiers),
-            count($cleaned_identifiers),
-            count($existing_identifiers) - count($cleaned_identifiers)
-        ));
+        $count = is_array($existing_identifiers) ? count($existing_identifiers) : 0;
+        $this->log_message('Identifier cleanup skipped to preserve dedupe list (current count: ' . $count . ').');
+        return;
     }
 
     /**

@@ -503,3 +503,138 @@ function pfa_migrate_product_ids() {
     wp_send_json_success(array('message' => 'Migration complete'));
 }
 add_action('wp_ajax_pfa_migrate_product_ids', 'pfa_migrate_product_ids');
+
+/**
+ * Clear duplicate posts based on grouping key.
+ *
+ * Params (POST):
+ * - group_by: 'product_id' (default) or 'basename'
+ * - keep: 'newest' (default) or 'oldest'
+ * - dry_run: '1' or '0' (default '1')
+ * - max_groups: int limit of groups to process (default 200)
+ */
+function pfa_clear_duplicates_ajax() {
+    check_ajax_referer('pfa_ajax_nonce', 'nonce');
+
+    if (!current_user_can('manage_options')) {
+        wp_send_json_error(array('message' => 'Insufficient permissions'));
+        return;
+    }
+
+    $group_by   = isset($_POST['group_by']) ? sanitize_text_field($_POST['group_by']) : 'product_id';
+    $keep       = isset($_POST['keep']) ? sanitize_text_field($_POST['keep']) : 'newest';
+    $dry_run    = isset($_POST['dry_run']) ? (bool) intval($_POST['dry_run']) : true;
+    $max_groups = isset($_POST['max_groups']) ? max(1, intval($_POST['max_groups'])) : 200;
+
+    global $wpdb;
+
+    switch ($group_by) {
+        case 'basename':
+            $meta_key = '_Amazone_produt_baseName';
+            break;
+        case 'source_product_id':
+            $meta_key = '_pfa_source_product_id';
+            break;
+        case 'product_key':
+            $meta_key = '_pfa_product_key';
+            break;
+        default:
+            $meta_key = '_product_id';
+            $group_by = 'product_id';
+            break;
+    }
+    $order    = ($keep === 'oldest') ? 'ASC' : 'DESC';
+
+    // 1) Find duplicate keys
+    $dup_keys = $wpdb->get_results($wpdb->prepare(
+        "SELECT pm.meta_value AS group_key, COUNT(*) AS cnt
+         FROM {$wpdb->postmeta} pm
+         JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+         JOIN {$wpdb->postmeta} pfa ON pfa.post_id = p.ID AND pfa.meta_key = %s AND pfa.meta_value = 'true'
+         WHERE pm.meta_key = %s
+           AND p.post_type = 'post'
+           AND p.post_status IN ('publish','future')
+           AND pm.meta_value IS NOT NULL AND pm.meta_value <> ''
+         GROUP BY pm.meta_value
+         HAVING COUNT(*) > 1
+         ORDER BY cnt DESC
+         LIMIT %d",
+        '_pfa_v2_post',
+        $meta_key,
+        $max_groups
+    ));
+
+    if (empty($dup_keys)) {
+        wp_send_json_success(array(
+            'message' => 'No duplicate groups found',
+            'groups_examined' => 0,
+            'groups_with_duplicates' => 0,
+            'posts_kept' => 0,
+            'posts_trashed' => 0,
+            'dry_run' => $dry_run ? 1 : 0,
+            'group_by' => $group_by,
+            'keep' => $keep
+        ));
+        return;
+    }
+
+    $groups_examined = 0;
+    $groups_with_duplicates = 0;
+    $posts_kept = 0;
+    $posts_trashed = 0;
+    $actions = array();
+
+    foreach ($dup_keys as $row) {
+        $groups_examined++;
+        $group_key = $row->group_key;
+
+        // Get all posts in this group ordered by date
+        $posts = $wpdb->get_results($wpdb->prepare(
+            "SELECT p.ID, p.post_date, p.post_status
+             FROM {$wpdb->posts} p
+             JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key = %s AND pm.meta_value = %s
+             JOIN {$wpdb->postmeta} pfa ON pfa.post_id = p.ID AND pfa.meta_key = %s AND pfa.meta_value = 'true'
+             WHERE p.post_type = 'post' AND p.post_status IN ('publish','future')
+             ORDER BY p.post_date {$order}",
+            $meta_key,
+            $group_key,
+            '_pfa_v2_post'
+        ));
+
+        if (count($posts) <= 1) {
+            continue;
+        }
+
+        $groups_with_duplicates++;
+
+        // Keep the first (newest or oldest depending on order)
+        $keep_post = array_shift($posts);
+        $posts_kept++;
+
+        // Trash the rest
+        foreach ($posts as $p) {
+            if (!$dry_run) {
+                wp_trash_post(intval($p->ID));
+            }
+            $posts_trashed++;
+            $actions[] = array(
+                'group_key' => $group_key,
+                'kept' => intval($keep_post->ID),
+                'trashed' => intval($p->ID)
+            );
+        }
+    }
+
+    wp_send_json_success(array(
+        'message' => 'Duplicates processed',
+        'groups_examined' => $groups_examined,
+        'groups_with_duplicates' => $groups_with_duplicates,
+        'posts_kept' => $posts_kept,
+        'posts_trashed' => $posts_trashed,
+        'dry_run' => $dry_run ? 1 : 0,
+        'group_by' => $group_by,
+        'keep' => $keep,
+        'actions' => $actions
+    ));
+}
+add_action('wp_ajax_pfa_clear_duplicates', 'pfa_clear_duplicates_ajax');

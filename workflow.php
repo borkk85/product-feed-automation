@@ -2,7 +2,7 @@
 /*
 Plugin Name: Product Feed Automation 
 Description: Product Feed Automation Workflow & SEO blog content creation plugin with flexible API integration.
-VersVersion: 1.0.1
+VersVersion: 1.6.2
 Author: borkk
 License: GPL2
 Text Domain: product-feed-automation
@@ -14,7 +14,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PFA_VERSION', '1.0.0');
+define('PFA_VERSION', '1.6.2');
 define('PFA_PLUGIN_DIR', plugin_dir_path(__FILE__));
 define('PFA_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('PFA_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -121,6 +121,19 @@ class Product_Feed_Automation
         }
         if (!wp_next_scheduled('pfa_api_check')) {
             wp_schedule_event(time(), $check_interval, 'pfa_api_check');
+        }
+
+        // Ensure canonical product identifiers exist for dedupe logic
+        if (!get_option('pfa_product_key_backfilled')) {
+            try {
+                $creator = PFA_Post_Creator::get_instance();
+                if ($creator && method_exists($creator, 'migrate_product_id_meta')) {
+                    $creator->migrate_product_id_meta();
+                }
+            } catch (Exception $e) {
+                error_log('[PFA] Failed to backfill product keys: ' . $e->getMessage());
+            }
+            update_option('pfa_product_key_backfilled', 1);
         }
 
 
@@ -370,7 +383,4 @@ function pfa_force_restart_all_schedules()
     // Force immediate initialization
     $scheduler = PFA_Post_Scheduler::get_instance();
     $scheduler->initialize_schedules();
-
-    // Force immediate run of dripfeed (after 1 minute to ensure everything is set up)
-    wp_schedule_single_event(time() + 60, 'pfa_dripfeed_publisher');
 }

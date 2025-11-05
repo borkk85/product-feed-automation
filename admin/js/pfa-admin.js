@@ -730,6 +730,47 @@ function pollDiscountCheck(jobId, $button) {
 
         // Initialize by getting initial status
         refreshQueueStatus();
+
+        // Clear duplicates (admin) — bind globally on page load
+        $(document).on('click', '#pfa-clear-duplicates', function() {
+            const $btn = $(this);
+            const dryrun = $('#pfa-dup-dryrun').is(':checked') ? 1 : 0;
+            const keep = $('#pfa-dup-keep').val();
+            const limit = parseInt($('#pfa-dup-limit').val() || '200', 10);
+            const $result = $('#pfa-dup-result');
+
+            $btn.prop('disabled', true).text('Processing...');
+            $result.removeClass('notice-success notice-error').hide().text('');
+
+            $.ajax({
+                url: pfaData.ajaxurl,
+                type: 'POST',
+                data: {
+                    action: 'pfa_clear_duplicates',
+                    nonce: pfaData.nonce,
+                    group_by: $('#pfa-dup-groupby').val(),
+                    keep: keep,
+                    dry_run: dryrun,
+                    max_groups: limit
+                },
+                success: function(resp) {
+                    if (resp && resp.success) {
+                        const d = resp.data;
+                        const msg = `Groups examined: ${d.groups_examined}, duplicate groups: ${d.groups_with_duplicates}, kept: ${d.posts_kept}, ${dryrun ? 'would trash' : 'trashed'}: ${d.posts_trashed}`;
+                        $result.addClass('notice-success').text(msg).show();
+                    } else {
+                        const err = resp && resp.data && resp.data.message ? resp.data.message : 'Unknown error';
+                        $result.addClass('notice-error').text('Cleanup failed: ' + err).show();
+                    }
+                },
+                error: function() {
+                    $result.addClass('notice-error').text('Server error during cleanup').show();
+                },
+                complete: function() {
+                    $btn.prop('disabled', false).text('Clear Duplicates');
+                }
+            });
+        });
     });
 
     /**
@@ -818,7 +859,7 @@ function pollDiscountCheck(jobId, $button) {
                 }
                 html += '</ul>';
                 
-                // Show server time
+        // Show server time
                 html += '<h3>Server Time</h3>';
                 html += '<p>' + data.server_time + '</p>';
                 
@@ -839,4 +880,5 @@ function pollDiscountCheck(jobId, $button) {
     });
 });
 })(jQuery);
+
 

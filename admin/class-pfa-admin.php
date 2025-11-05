@@ -135,22 +135,46 @@ class PFA_Admin
     public function register_settings()
     {
         // API Settings
-        register_setting('pfa_api_settings', 'addrevenue_api_key');
-        register_setting('pfa_api_settings', 'ai_api_key');
-        register_setting('pfa_api_settings', 'channel_id');
+        register_setting('pfa_api_settings', 'addrevenue_api_key', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting('pfa_api_settings', 'ai_api_key', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting('pfa_api_settings', 'channel_id', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
 
         // Automation Settings
-        register_setting('pfa_automation_settings', 'pfa_automation_enabled');
-        register_setting('pfa_automation_settings', 'min_discount');
-        register_setting('pfa_automation_settings', 'max_posts_per_day');
-        register_setting('pfa_automation_settings', 'check_interval');
-        register_setting('pfa_automation_settings', 'dripfeed_interval');
+        register_setting('pfa_automation_settings', 'pfa_automation_enabled', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting('pfa_automation_settings', 'min_discount', array(
+            'sanitize_callback' => 'absint',
+        ));
+        register_setting('pfa_automation_settings', 'max_posts_per_day', array(
+            'sanitize_callback' => 'absint',
+        ));
+        register_setting('pfa_automation_settings', 'check_interval', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting('pfa_automation_settings', 'dripfeed_interval', array(
+            'sanitize_callback' => 'absint',
+        ));
 
         // AI Settings
-        register_setting('pfa_ai_settings', 'ai_model');
-        register_setting('pfa_ai_settings', 'max_tokens');
-        register_setting('pfa_ai_settings', 'temperature');
-        register_setting('pfa_ai_settings', 'prompt_for_ai');
+        register_setting('pfa_ai_settings', 'ai_model', array(
+            'sanitize_callback' => 'sanitize_text_field',
+        ));
+        register_setting('pfa_ai_settings', 'max_tokens', array(
+            'sanitize_callback' => 'absint',
+        ));
+        register_setting('pfa_ai_settings', 'temperature', array(
+            'sanitize_callback' => 'floatval',
+        ));
+        register_setting('pfa_ai_settings', 'prompt_for_ai', array(
+            'sanitize_callback' => 'sanitize_textarea_field',
+        ));
     }
 
     /**

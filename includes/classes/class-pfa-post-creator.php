@@ -57,6 +57,65 @@ class PFA_Post_Creator
     }
 
     /**
+     * Build a canonical product key that stays stable across API fetches.
+     *
+     * Prefers product_id, then sku/mpn, then falls back to API id. Scope by
+     * advertiser to avoid collisions across brands.
+     *
+     * @param array|string $product Product data array or scalar identifier.
+     * @return string Canonical key like "{advertiserId}:{stableId}".
+     */
+    public function build_canonical_product_key($product)
+    {
+        $stable = '';
+
+        if (is_array($product)) {
+            $candidates = array(
+                isset($product['product_id']) ? $product['product_id'] : null,
+                isset($product['sku']) ? $product['sku'] : null,
+                isset($product['mpn']) ? $product['mpn'] : null,
+                isset($product['id']) ? $product['id'] : null,
+            );
+
+            foreach ($candidates as $candidate) {
+                if (!empty($candidate)) {
+                    $stable = (string) $candidate;
+                    break;
+                }
+            }
+
+            if ($stable === '' && !empty($product['trackingLink'])) {
+                $parsed = parse_url($product['trackingLink']);
+                if (!empty($parsed['query'])) {
+                    parse_str($parsed['query'], $q);
+                    if (!empty($q['u'])) {
+                        $url = urldecode($q['u']);
+                        $path = parse_url($url, PHP_URL_PATH);
+                        if ($path) {
+                            $stable = basename($path);
+                        }
+                    }
+                }
+            }
+        } else {
+            $stable = (string) $product;
+        }
+
+        $stable = strtolower(trim($stable));
+        if ($stable === '') {
+            if (is_array($product) && isset($product['id'])) {
+                $stable = 'post-' . strtolower(trim((string) $product['id']));
+            } elseif (!is_array($product) && !empty($product)) {
+                $stable = 'post-' . strtolower(trim((string) $product));
+            } else {
+                $stable = 'post-' . uniqid();
+            }
+        }
+
+        return $stable;
+    }
+
+    /**
      * Prevent cloning.
      *
      * @since    1.0.0
@@ -93,6 +152,42 @@ class PFA_Post_Creator
         foreach ($results as $row) {
             update_post_meta($row->ID, '_product_id', $row->basename);
         }
+
+        // Backfill canonical product information for posts missing it
+        $canonical_results = $wpdb->get_results($wpdb->prepare(
+            "SELECT p.ID,
+                    pm_source.meta_value AS source_id,
+                    pm_pid.meta_value AS product_id,
+                    pm_base.meta_value AS base_name,
+                    pm_key.meta_value AS product_key
+             FROM {$wpdb->posts} p
+             JOIN {$wpdb->postmeta} pm_flag ON pm_flag.post_id = p.ID AND pm_flag.meta_key = %s AND pm_flag.meta_value = 'true'
+             LEFT JOIN {$wpdb->postmeta} pm_key ON pm_key.post_id = p.ID AND pm_key.meta_key = '_pfa_product_key'
+             LEFT JOIN {$wpdb->postmeta} pm_source ON pm_source.post_id = p.ID AND pm_source.meta_key = '_pfa_source_product_id'
+             LEFT JOIN {$wpdb->postmeta} pm_pid ON pm_pid.post_id = p.ID AND pm_pid.meta_key = '_product_id'
+             LEFT JOIN {$wpdb->postmeta} pm_base ON pm_base.post_id = p.ID AND pm_base.meta_key = '_Amazone_produt_baseName'
+             WHERE (pm_key.meta_value IS NULL OR pm_key.meta_value = '')",
+            self::POST_IDENTIFIER
+        ));
+
+        foreach ($canonical_results as $row) {
+            $candidates = array($row->source_id, $row->product_id, $row->base_name);
+            $stable = '';
+            foreach ($candidates as $candidate) {
+                if (!empty($candidate)) {
+                    $stable = strtolower(trim($candidate));
+                    break;
+                }
+            }
+            if ($stable === '') {
+                $stable = 'post-' . strtolower(trim((string) $row->ID));
+            }
+
+            if (empty($row->source_id)) {
+                update_post_meta($row->ID, '_pfa_source_product_id', $stable);
+            }
+            update_post_meta($row->ID, '_pfa_product_key', $stable);
+        }
     }
 
 
@@ -122,8 +217,7 @@ class PFA_Post_Creator
             return array('status' => 'exists', 'post_id' => $existing_post_id);
         }
 
-        // Clear any potential object cache to ensure data consistency
-        wp_cache_flush();
+        // Avoid flushing the entire object cache; we'll clear specific caches after insert
 
         try {
             $product_id = $product_data['id'];
@@ -202,13 +296,21 @@ class PFA_Post_Creator
 
             $this->log_message('Successfully created post with ID: ' . $post_id);
 
+            $canonical_key = $this->build_canonical_product_key($product_data);
+            $source_product_id = isset($product_data['product_id']) && !empty($product_data['product_id'])
+                ? $product_data['product_id']
+                : $product_id;
+
             // Add post meta
             $metas = array(
                 '_Amazone_produt_baseName' => $product_id,
                 '_product_id' => $product_id,
+                '_pfa_source_product_id' => $source_product_id,
+                '_pfa_product_key' => $canonical_key,
                 '_product_url' => $product_data['trackingLink'],
                 'dynamic_amazone_link' => $dynamic_esc_url,
                 'dynamic_link' => $dynamic_esc_url,
+                '_original_price' => isset($product_data['price']) ? $product_data['price'] : '',
                 '_discount_price' => $product_data['sale_price'],
                 self::POST_IDENTIFIER => 'true' // This is the critical meta for flagging as our post
             );
@@ -273,26 +375,9 @@ class PFA_Post_Creator
                 // Force post cache clear to ensure data is written to DB
                 clean_post_cache($post_id);
 
-                // If post is scheduled, double check it's correctly set
+                // If post is scheduled, just log; do not force-publish and flip back
                 if ($post->post_status === 'future') {
                     $this->log_message("Post {$post_id} is scheduled for publication at {$post->post_date}");
-
-                    // Verify future post queue
-                    wp_publish_post($post_id);
-                    wp_transition_post_status('future', 'publish', $post);
-
-                    // Set it back to future with fresh dates
-                    if (isset($schedule_data['post_date'])) {
-                        wp_update_post(array(
-                            'ID' => $post_id,
-                            'post_status' => 'future',
-                            'post_date' => $schedule_data['post_date'],
-                            'post_date_gmt' => isset($schedule_data['post_date_gmt']) ?
-                                $schedule_data['post_date_gmt'] :
-                                get_gmt_from_date($schedule_data['post_date'])
-                        ));
-                        $this->log_message("Re-applied future status to post {$post_id}");
-                    }
                 }
             } else {
                 $this->log_message("WARNING: Post {$post_id} does not exist after creation");
@@ -403,10 +488,17 @@ class PFA_Post_Creator
 
         update_post_meta($post_id, '_Amazone_produt_baseName', $amazone_prod_basename);
         update_post_meta($post_id, '_product_id', $amazone_prod_basename);
+        update_post_meta($post_id, '_pfa_source_product_id', $amazone_prod_basename);
+        update_post_meta($post_id, '_pfa_product_key', $this->build_canonical_product_key(array(
+            'advertiserId' => 0,
+            'product_id' => $amazone_prod_basename
+        )));
         update_post_meta($post_id, '_product_url', $product_url);
         update_post_meta($post_id, 'dynamic_amazone_link', $dynamic_esc_url);
         update_post_meta($post_id, 'dynamic_link', $dynamic_esc_url);
+        update_post_meta($post_id, '_original_price', $price);
         update_post_meta($post_id, '_discount_price', $sale_price);
+        
 
         if (!empty($featured_image)) {
             $this->set_featured_image($post_id, $featured_image);
@@ -551,22 +643,44 @@ class PFA_Post_Creator
         $product_path = parse_url($actual_product_url, PHP_URL_PATH);
         $amazone_prod_basename = basename($product_path);
 
-        $product_id = null;
-        $mpn = null;
+        $api_id = null;
+        $api_product_id = null;
+        $canonical_key = null;
         if (is_array($product_data)) {
             if (isset($product_data['id'])) {
-                $product_id = $product_data['id'];
+                $api_id = $product_data['id'];
             }
-            if (isset($product_data['mpn'])) {
-                $mpn = $product_data['mpn'];
+            if (isset($product_data['product_id'])) {
+                $api_product_id = $product_data['product_id'];
             }
+            $canonical_key = $this->build_canonical_product_key($product_data);
         } elseif (is_scalar($product_data)) {
-            $product_id = $product_data;
+            $api_id = $product_data;
         }
 
         global $wpdb;
-        $query = $wpdb->prepare(
-            "SELECT p.ID, p.post_title
+        // Build conditional SQL to also match by API product_id when present
+        $extra_where = '';
+        $params = array(
+            self::POST_IDENTIFIER,
+            $link,
+            $actual_product_url,
+            $amazone_prod_basename
+        );
+        if (!empty($api_id)) {
+            $extra_where .= " OR (pm.meta_key = '_product_id' AND pm.meta_value = %s)";
+            $params[] = $api_id;
+        }
+        if (!empty($api_product_id) && $api_product_id !== $api_id) {
+            $extra_where .= " OR (pm.meta_key = '_product_id' AND pm.meta_value = %s)";
+            $params[] = $api_product_id;
+        }
+        if (!empty($canonical_key)) {
+            $extra_where .= " OR (pm.meta_key = '_pfa_product_key' AND pm.meta_value = %s)";
+            $params[] = $canonical_key;
+        }
+
+        $sql = "SELECT p.ID, p.post_title
                 FROM {$wpdb->posts} p
                 JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id
                 JOIN {$wpdb->postmeta} pm2 ON p.ID = pm2.post_id
@@ -576,26 +690,30 @@ class PFA_Post_Creator
                     (pm.meta_key = '_product_url' AND (pm.meta_value = %s OR pm.meta_value = %s))
                     OR
                     (pm.meta_key = '_Amazone_produt_baseName' AND pm.meta_value = %s)
-                    OR
-                    (pm.meta_key = '_product_id' AND pm.meta_value = %s)
-                    OR
-                    (%s IS NOT NULL AND pm.meta_key = '_product_id' AND pm.meta_value = %s)
+                    {$extra_where}
                 )
                 AND p.post_type = 'post'
                 AND p.post_status NOT IN ('trash', 'auto-draft')
-                LIMIT 1",
-            self::POST_IDENTIFIER,
-            $link,
-            $actual_product_url,
-            $amazone_prod_basename,
-            $amazone_prod_basename,
-            $product_id,
-            $product_id
-        );
+                LIMIT 1";
+
+        $query = $wpdb->prepare($sql, $params);
 
         $result = $wpdb->get_row($query);
 
         if ($result) {
+            // Allow re-posting when only archived copy exists
+            $active_cat  = get_term_by('slug', 'active-deals', 'category');
+            $archive_cat = get_term_by('slug', 'archived-deals', 'category');
+            $cats = wp_get_post_categories(intval($result->ID));
+
+            $in_active  = ($active_cat && in_array($active_cat->term_id, $cats, true));
+            $in_archive = ($archive_cat && in_array($archive_cat->term_id, $cats, true));
+
+            if ($in_archive && !$in_active) {
+                $this->log_message('Existing match is archived-only; allowing new post');
+                return false;
+            }
+
             return intval($result->ID);
         }
 
@@ -616,10 +734,13 @@ class PFA_Post_Creator
         $meta_keys = array(
             '_Amazone_produt_baseName',
             '_product_id',
+            '_pfa_source_product_id',
+            '_pfa_product_key',
             '_Amazone_produt_link',
             'dynamic_amazone_link',
             'dynamic_link',
-            '_discount_price'
+            '_discount_price',
+            '_original_price'
         );
 
         foreach ($meta_keys as $meta_key) {
@@ -1019,11 +1140,6 @@ class PFA_Post_Creator
         $ai_model = get_option('ai_model', 'gpt-3.5-turbo');
         $url = "https://api.openai.com/v1/chat/completions";
 
-        $headers = array(
-            'Authorization: Bearer ' . $ai_api_key,
-            'Content-Type: application/json',
-        );
-
         $data = array(
             "model" => $ai_model,
             "messages" => array(
@@ -1042,47 +1158,54 @@ class PFA_Post_Creator
             "presence_penalty" => $presence_penalty
         );
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $url);
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $headers);
-        curl_setopt($ch, CURLOPT_POST, true);
-        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($data));
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        $response = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        curl_close($ch);
+        $args = array(
+            'headers' => array(
+                'Authorization' => 'Bearer ' . $ai_api_key,
+                'Content-Type'  => 'application/json',
+            ),
+            'body'    => wp_json_encode($data),
+            'timeout' => 30,
+        );
 
-        if ($http_code === 200) {
-            $response_data = json_decode($response, true);
-            $generated_text = $response_data['choices'][0]['message']['content'];
-
-            $this->log_message('Raw AI response: ' . $generated_text);
-
-            if (str_contains($generated_text, 'Title:')) {
-                $title_parts = explode('Title:', trim($generated_text));
-                $content_split = explode('Description:', end($title_parts));
-
-                $title = trim(str_replace(array('Output', '**'), '', $content_split[0]));
-                $content = trim($content_split[1]);
-
-                return array(
-                    'title' => $title,
-                    'content' => $content
-                );
-            } else {
-                $content_split = explode(':', trim($generated_text));
-                return array(
-                    'title' => trim($content_split[1]),
-                    'content' => trim($content_split[2])
-                );
-            }
-        } else {
-            $error_message = "HTTP Error: " . $http_code . "\n";
-            $error_message .= "Response: " . $response . "\n";
-            $error_message .= "API Key (first 5 chars): " . substr($ai_api_key, 0, 5) . "...\n";
+        $resp = wp_remote_post($url, $args);
+        if (is_wp_error($resp)) {
+            $error_message = 'HTTP Error: ' . $resp->get_error_message() . "\n";
             $error_message .= "AI Model: " . $ai_model . "\n";
             $this->log_message($error_message);
             return $error_message;
+        }
+
+        $http_code = (int) wp_remote_retrieve_response_code($resp);
+        $response    = wp_remote_retrieve_body($resp);
+        if ($http_code !== 200) {
+            $error_message = "HTTP Error: " . $http_code . "\n";
+            $error_message .= "Response: " . $response . "\n";
+            $error_message .= "AI Model: " . $ai_model . "\n";
+            $this->log_message($error_message);
+            return $error_message;
+        }
+
+        $response_data = json_decode($response, true);
+        $generated_text = isset($response_data['choices'][0]['message']['content']) ? $response_data['choices'][0]['message']['content'] : '';
+        $this->log_message('Raw AI response: ' . $generated_text);
+
+        if (str_contains($generated_text, 'Title:')) {
+            $title_parts = explode('Title:', trim($generated_text));
+            $content_split = explode('Description:', end($title_parts));
+
+            $title = trim(str_replace(array('Output', '**'), '', $content_split[0]));
+            $content = trim($content_split[1]);
+
+            return array(
+                'title' => $title,
+                'content' => $content
+            );
+        } else {
+            $content_split = explode(':', trim($generated_text));
+            return array(
+                'title' => isset($content_split[1]) ? trim($content_split[1]) : '',
+                'content' => isset($content_split[2]) ? trim($content_split[2]) : ''
+            );
         }
     }
 

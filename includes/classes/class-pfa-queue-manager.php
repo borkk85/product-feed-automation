@@ -133,8 +133,8 @@ class PFA_Queue_Manager
             $this->log_message('Dripfeed lock reset via cache clear');
         }
 
-        wp_cache_flush(); // Flush WordPress object cache
-        $this->log_message('Cache cleared completely');
+        // Avoid flushing the entire object cache; limit to plugin transients
+        $this->log_message('Cache cleared (plugin transients)');
     }
 
     /**
@@ -187,6 +187,61 @@ class PFA_Queue_Manager
     }
 
     /**
+     * Build identifier hashes for a product using stable keys.
+     *
+     * First hash uses canonical product key (advertiser + product_id/sku/mpn/id).
+     * Second hash keeps legacy id|gtin|mpn to ensure backwards compatibility.
+     *
+     * @param array $product Product data array.
+     * @return array List of md5 hashes (unique, primary hash first).
+     */
+    private function build_product_identifier_hashes($product)
+    {
+        $creator = PFA_Post_Creator::get_instance();
+        $hashes = array();
+
+        if (is_array($product)) {
+            $canonical = $creator->build_canonical_product_key($product);
+            if (!empty($canonical)) {
+                $hashes[] = md5($canonical);
+            }
+
+            $id = isset($product['id']) ? (string) $product['id'] : '';
+            $gtin = isset($product['gtin']) ? (string) $product['gtin'] : '';
+            $mpn = isset($product['mpn']) ? (string) $product['mpn'] : '';
+
+            if ($id !== '' || $gtin !== '' || $mpn !== '') {
+                $hashes[] = md5($id . '|' . $gtin . '|' . $mpn);
+            }
+        }
+
+        return array_values(array_unique(array_filter($hashes)));
+    }
+
+    /**
+     * Expose identifier hashes for external consumers (scheduler).
+     *
+     * @param array $product
+     * @return array
+     */
+    public function get_identifier_hashes($product)
+    {
+        return $this->build_product_identifier_hashes($product);
+    }
+
+    /**
+     * Return the primary identifier hash (canonical) for storage.
+     *
+     * @param array $product
+     * @return string
+     */
+    public function get_primary_identifier_hash($product)
+    {
+        $hashes = $this->build_product_identifier_hashes($product);
+        return isset($hashes[0]) ? $hashes[0] : '';
+    }
+
+    /**
      * Add a product to the queue.
      *
      * @since    1.0.0
@@ -214,6 +269,18 @@ class PFA_Queue_Manager
         }
 
         try {
+            $identifier_hashes = $this->get_identifier_hashes($product);
+
+            if (!empty($identifier_hashes)) {
+                $stored_identifiers = get_option('pfa_product_identifiers', array());
+                foreach ($identifier_hashes as $hash) {
+                    if (in_array($hash, $stored_identifiers, true)) {
+                        $this->log_message("Product {$product['id']} already processed (identifier match), skipping.");
+                        return false;
+                    }
+                }
+            }
+
             // Get current queue - FIXED: Don't use bypass_cache here to maintain queue continuity
             $queue = get_transient($this->queue_key);
             if (!is_array($queue)) {
@@ -255,6 +322,12 @@ class PFA_Queue_Manager
             }
 
             $this->log_message("Added product {$product['id']} to queue. Queue now has " . count($queue) . " items.");
+
+            if (!empty($identifier_hashes)) {
+                $stored_identifiers = get_option('pfa_product_identifiers', array());
+                $stored_identifiers = array_values(array_unique(array_merge($stored_identifiers, $identifier_hashes)));
+                update_option('pfa_product_identifiers', $stored_identifiers);
+            }
             return true;
         } catch (Exception $e) {
             $this->log_message("Exception adding product {$product['id']} to queue: " . $e->getMessage());
@@ -382,22 +455,30 @@ class PFA_Queue_Manager
             return false;
         }
 
-        // Generate the same identifier used in scheduling
-        $search_identifier = md5(
-            $product_id . '|' .
-                (isset($product_data['gtin']) ? $product_data['gtin'] : '') . '|' .
-                (isset($product_data['mpn']) ? $product_data['mpn'] : '')
-        );
+        $product_array = is_array($product_data) ? $product_data : array('id' => $product_id);
+        $search_hashes = $this->get_identifier_hashes($product_array);
+
+        if (empty($search_hashes)) {
+            $search_hashes[] = md5(
+                $product_id . '|' .
+                    (isset($product_array['gtin']) ? $product_array['gtin'] : '') . '|' .
+                    (isset($product_array['mpn']) ? $product_array['mpn'] : '')
+            );
+        }
 
         foreach ($queue as $item) {
             if (isset($item['id'])) {
-                $queue_identifier = md5(
-                    $item['id'] . '|' .
-                        (isset($item['gtin']) ? $item['gtin'] : '') . '|' .
-                        (isset($item['mpn']) ? $item['mpn'] : '')
-                );
+                $queue_hashes = $this->get_identifier_hashes($item);
 
-                if ($queue_identifier === $search_identifier) {
+                if (empty($queue_hashes)) {
+                    $queue_hashes[] = md5(
+                        $item['id'] . '|' .
+                            (isset($item['gtin']) ? $item['gtin'] : '') . '|' .
+                            (isset($item['mpn']) ? $item['mpn'] : '')
+                    );
+                }
+
+                if (!empty(array_intersect($search_hashes, $queue_hashes))) {
                     return true;
                 }
             }

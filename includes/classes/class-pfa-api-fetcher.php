@@ -168,6 +168,7 @@ class PFA_API_Fetcher {
             $total_count = null; // Initialize total_count to be fetched on the first API call
 
             $this->log_message('Discount Value: ' . $min_discount);
+            $market = 'SE';
             
             do {
                 $this->log_message(sprintf(
@@ -178,7 +179,8 @@ class PFA_API_Fetcher {
                     $limit
                 ));
         
-                $api_url = "https://addrevenue.io/api/v2/products?channelId={$channel_id}&market=SE&minDiscount={$min_discount}&limit={$limit}&offset={$offset}";
+                // Build request URL (provider supports minDiscount)
+                $api_url = "https://addrevenue.io/api/v2/products?channelId={$channel_id}&market={$market}&minDiscount={$min_discount}&limit={$limit}&offset={$offset}";
                 $this->log_message('API URL: ' . $api_url);
         
                 $response = wp_remote_get($api_url, array(

@@ -180,77 +180,112 @@ $migration_pending = $wpdb->get_var(
                         </div>
                     </div>
                 </div>
+                <div class="pfa-manual-duplicate-status pfa-panel">
+                    <!-- Manual Post Creation Panel -->
+                    <div class="pfa-manual-post-panel pfa-panel">
+                        <h2><?php _e('Manual Post Creation', 'product-feed-automation'); ?></h2>
 
-                <!-- Manual Post Creation Panel -->
-                <div class="pfa-manual-post-panel pfa-panel">
-                    <h2><?php _e('Manual Post Creation', 'product-feed-automation'); ?></h2>
+                        <div id="pfa-manual-post-message" class="notice" style="display: none;"></div>
 
-                    <div id="pfa-manual-post-message" class="notice" style="display: none;"></div>
+                        <form method="post" id="pfa-manual-post-form" action="">
+                            <table class="form-table">
+                                <tr>
+                                    <th scope="row"><label for="post_title"><?php _e('Post Title', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="text" id="post_title" name="post_title" class="regular-text" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="featured_image"><?php _e('Featured Image URL', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="url" id="featured_image" name="featured_image" class="regular-text" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="product_url"><?php _e('Product URL', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="url" id="product_url" name="product_url" class="regular-text" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="price"><?php _e('Original Price', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="number" id="price" name="price" step="0.01" min="0" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="sale_price"><?php _e('Sale Price', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="number" id="sale_price" name="sale_price" step="0.01" min="0" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="brand"><?php _e('Brand', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="text" id="brand" name="brand" class="regular-text" required></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="brand_image"><?php _e('Brand Logo URL', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="url" id="brand_image" name="brand_image" class="regular-text"></td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="product_category"><?php _e('Check if Category Exists:', 'product-feed-automation'); ?></label></th>
+                                    <td><?php
+                                        wp_dropdown_categories(array(
+                                            'taxonomy'         => 'product_categories',
+                                            'name'             => 'product_category',
+                                            'orderby'          => 'name',
+                                            'order'            => 'ASC',
+                                            'show_count'       => 0,
+                                            'hide_empty'       => 0,
+                                            'child_of'         => 0,
+                                            'echo'             => 1,
+                                            'hierarchical'     => 1,
+                                            'depth'            => 3,
+                                            'show_option_none' => __('Select Category', 'product-feed-automation'),
+                                        ));
+                                        ?>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <th scope="row"><label for="category"><?php _e('Category', 'product-feed-automation'); ?></label></th>
+                                    <td><input type="text" id="category" name="category" class="regular-text" placeholder="<?php _e('e.g., Electronics > Computers > Laptops', 'product-feed-automation'); ?>"></td>
+                                </tr>
+                            </table>
 
-                   <form method="post" id="pfa-manual-post-form" action="">
-                        <table class="form-table">
-                            <tr>
-                                <th scope="row"><label for="post_title"><?php _e('Post Title', 'product-feed-automation'); ?></label></th>
-                                <td><input type="text" id="post_title" name="post_title" class="regular-text" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="featured_image"><?php _e('Featured Image URL', 'product-feed-automation'); ?></label></th>
-                                <td><input type="url" id="featured_image" name="featured_image" class="regular-text" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="product_url"><?php _e('Product URL', 'product-feed-automation'); ?></label></th>
-                                <td><input type="url" id="product_url" name="product_url" class="regular-text" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="price"><?php _e('Original Price', 'product-feed-automation'); ?></label></th>
-                                <td><input type="number" id="price" name="price" step="0.01" min="0" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="sale_price"><?php _e('Sale Price', 'product-feed-automation'); ?></label></th>
-                                <td><input type="number" id="sale_price" name="sale_price" step="0.01" min="0" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="brand"><?php _e('Brand', 'product-feed-automation'); ?></label></th>
-                                <td><input type="text" id="brand" name="brand" class="regular-text" required></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="brand_image"><?php _e('Brand Logo URL', 'product-feed-automation'); ?></label></th>
-                                <td><input type="url" id="brand_image" name="brand_image" class="regular-text"></td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="product_category"><?php _e('Check if Category Exists:', 'product-feed-automation'); ?></label></th>
-                                <td><?php
-                                    wp_dropdown_categories(array(
-                                        'taxonomy'         => 'product_categories',
-                                        'name'             => 'product_category',
-                                        'orderby'          => 'name',
-                                        'order'            => 'ASC',
-                                        'show_count'       => 0,
-                                        'hide_empty'       => 0,
-                                        'child_of'         => 0,
-                                        'echo'             => 1,
-                                        'hierarchical'     => 1,
-                                        'depth'            => 3,
-                                        'show_option_none' => __('Select Category', 'product-feed-automation'),
-                                    ));
-                                    ?>
-                                </td>
-                            </tr>
-                            <tr>
-                                <th scope="row"><label for="category"><?php _e('Category', 'product-feed-automation'); ?></label></th>
-                                <td><input type="text" id="category" name="category" class="regular-text" placeholder="<?php _e('e.g., Electronics > Computers > Laptops', 'product-feed-automation'); ?>"></td>
-                            </tr>
-                        </table>
+                            <p class="submit">
+                                <button type="submit" name="submit_manual_post" class="button-primary">
+                                    <?php _e('Create Post', 'product-feed-automation'); ?>
+                                </button>
+                            </p>
+                        </form>
+                    </div>
 
-                        <p class="submit">
-                            <button type="submit" name="submit_manual_post" class="button-primary">
-                                <?php _e('Create Post', 'product-feed-automation'); ?>
-                            </button>
-                        </p>
-                    </form>
+                    <!-- Duplicates Cleanup Panel -->
+                    <div class="pfa-duplicates-panel pfa-panel">
+                        <h2><?php _e('Duplicates Cleanup', 'product-feed-automation'); ?></h2>
+                        <p class="description"><?php _e('Find and remove duplicate PFA posts grouped by Product ID. Default is a dry run that only reports what would be removed.', 'product-feed-automation'); ?></p>
+                        <div class="pfa-dup-controls">
+                            <label>
+                                <input type="checkbox" id="pfa-dup-dryrun" checked>
+                                <?php _e('Dry run (preview only)', 'product-feed-automation'); ?>
+                            </label>
+                        <label style="margin-left: 15px;">
+                            <?php _e('Keep:', 'product-feed-automation'); ?>
+                            <select id="pfa-dup-keep">
+                                <option value="newest" selected><?php _e('Newest', 'product-feed-automation'); ?></option>
+                                <option value="oldest"><?php _e('Oldest', 'product-feed-automation'); ?></option>
+                            </select>
+                        </label>
+                        <label style="margin-left: 15px;">
+                            <?php _e('Group by:', 'product-feed-automation'); ?>
+                            <select id="pfa-dup-groupby">
+                                <option value="source_product_id" selected><?php _e('Stable Product ID', 'product-feed-automation'); ?></option>
+                                <option value="product_id"><?php _e('Legacy Product ID', 'product-feed-automation'); ?></option>
+                                <option value="product_key"><?php _e('Canonical Product Key', 'product-feed-automation'); ?></option>
+                            </select>
+                        </label>
+                        <label style="margin-left: 15px;">
+                            <?php _e('Groups limit:', 'product-feed-automation'); ?>
+                            <input type="number" id="pfa-dup-limit" min="1" value="200" style="width: 90px;">
+                        </label>
+                    </div>
+                        <div style="margin-top:10px;">
+                            <button type="button" id="pfa-clear-duplicates" class="button button-primary"><?php _e('Clear Duplicates', 'product-feed-automation'); ?></button>
+                        </div>
+                        <div id="pfa-dup-result" style="margin-top:10px; display:none;" class="notice"></div>
+                    </div>
                 </div>
-            </div>
-
+            
             <!-- Right Column: Settings -->
             <div class="pfa-column pfa-settings-panel">
                 <div class="pfa-settings pfa-panel">
@@ -281,9 +316,10 @@ $migration_pending = $wpdb->get_var(
                                 <th scope="row"><label for="ai_model"><?php _e('AI Model', 'product-feed-automation'); ?></label></th>
                                 <td>
                                     <select id="ai_model" name="ai_model">
-                                    <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
-                                    <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
-                                    <option value="gpt-4o-mini" <?php selected($ai_model, 'gpt-4o-mini'); ?>><?php _e('GPT-4o Mini', 'product-feed-automation'); ?></option>
+                                        <option value="gpt-3.5-turbo" <?php selected($ai_model, 'gpt-3.5-turbo'); ?>><?php _e('GPT-3.5 Turbo', 'product-feed-automation'); ?></option>
+                                        <option value="gpt-4" <?php selected($ai_model, 'gpt-4'); ?>><?php _e('GPT-4', 'product-feed-automation'); ?></option>
+                                        <option value="gpt-4o-mini" <?php selected($ai_model, 'gpt-4o-mini'); ?>><?php _e('GPT-4o Mini', 'product-feed-automation'); ?></option>
+                                        <option value="gpt-5-mini" <?php selected($ai_model, 'gpt-5-mini'); ?>><?php _e('GPT-5 Mini', 'product-feed-automation'); ?></option>
                                     </select>
                                 </td>
                             </tr>
